@@ -745,8 +745,13 @@ posix_handle_soft (xlator_t *this, const char *real_path, loc_t *loc,
         char        *newpath = NULL;
         struct stat  newbuf;
         int          ret = -1;
+        char        *temp_path = NULL;
+        int          base_len = 0;
+        struct posix_private * priv            = NULL;
 
+        priv = this->private;
 
+ 
         MAKE_HANDLE_PATH (newpath, this, gfid, NULL);
         MAKE_HANDLE_RELPATH (oldpath, this, loc->pargfid, loc->name);
 
@@ -766,8 +771,22 @@ posix_handle_soft (xlator_t *this, const char *real_path, loc_t *loc,
                                 newpath, strerror (errno));
                         return -1;
                 }
+#if 0
+                base_len = (priv->meta_base_path_length + SLEN(GF_HIDDEN_PATH) + 45);
+                temp_path = alloca (base_len + 1);
+                base_len = snprintf (temp_path, base_len + 1, "%s/temp",
+                             priv->meta_base_path);
 
-                ret = symlink (oldpath, newpath);
+                ret = rename(temp_path, newpath); /* DAN */
+                 if (ret) {
+                        gf_log (this->name, GF_LOG_WARNING,
+                                "rename %s -> %s failed (%s)",
+                                real_path, newpath, strerror (errno));
+                        return -1;
+                }
+                ret = symlink (newpath, real_path);
+#endif
+      	        ret = symlink (oldpath, newpath);
                 if (ret) {
                         gf_log (this->name, GF_LOG_WARNING,
                                 "symlink %s -> %s failed (%s)",

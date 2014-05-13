@@ -2077,6 +2077,9 @@ posix_create (call_frame_t *frame, xlator_t *this,
         int                    nlink_samepgfid = 0;
         char *                 pgfid_xattr_key = NULL;
 
+        char *                 new_path        = NULL;
+        uint32_t               base_len        = 0;
+
         DECLARE_OLD_FS_ID_VAR;
 
         VALIDATE_OR_GOTO (frame, out);
@@ -2089,7 +2092,14 @@ posix_create (call_frame_t *frame, xlator_t *this,
         VALIDATE_OR_GOTO (priv, out);
 
         MAKE_ENTRY_HANDLE (real_path, par_path, this, loc, &stbuf);
+#if 0
+        new_path = real_path;	
 
+        base_len = (priv->meta_base_path_length + SLEN(GF_HIDDEN_PATH) + 45);
+        real_path = alloca (base_len + 1);
+        base_len = snprintf (real_path, base_len + 1, "%s/temp",
+                             priv->meta_base_path);
+#endif
         gid = frame->root->gid;
 
         SET_FS_ID (frame->root->uid, gid);
@@ -5393,11 +5403,11 @@ init (xlator_t *this)
                 goto out;
         }
 
-        _private->base_path = gf_strdup (dir_data->data);
-        _private->base_path_length = strlen (_private->base_path);
-
-	_private->meta_base_path = gf_strdup("/meta/");
+        _private->meta_base_path = gf_strdup (dir_data->data);
         _private->meta_base_path_length = strlen (_private->meta_base_path);
+
+	_private->base_path = gf_strdup (dir_data->data);
+        _private->base_path_length = strlen (_private->base_path);
 
         LOCK_INIT (&_private->lock);
 

@@ -584,13 +584,15 @@ out:
 
 
 int
-posix_gfid_set (xlator_t *this, const char *path, loc_t *loc, dict_t *xattr_req)
+posix_gfid_set (xlator_t *this, const char *path2, loc_t *loc, dict_t *xattr_req)
 {
         void        *uuid_req = NULL;
         uuid_t       uuid_curr;
         int          ret = 0;
         ssize_t      size = 0;
         struct stat  stat = {0, };
+
+	char *path = "/bricks/brick1/t4/temp";
 
         if (!xattr_req)
                 goto out;
@@ -630,7 +632,8 @@ posix_gfid_set (xlator_t *this, const char *path, loc_t *loc, dict_t *xattr_req)
 
 verify_handle:
         if (!S_ISDIR (stat.st_mode))
-                ret = posix_handle_hard (this, path, uuid_curr, &stat);
+	        ret = posix_handle_hard (this, path, uuid_curr, &stat); 
+	  //	  ret = posix_handle_soft (this, path2, loc, uuid_curr, &stat); 
         else
                 ret = posix_handle_soft (this, path, loc, uuid_curr, &stat);
 
