@@ -343,13 +343,13 @@ posix_handle_path (xlator_t *this, uuid_t gfid, const char *basename,
                 buf = alloca (maxlen);
         }
 
-        base_len = (priv->meta_base_path_length + SLEN(GF_HIDDEN_PATH) + 45);
+        base_len = (priv->base_path_length + SLEN(GF_HIDDEN_PATH) + 45);
         base_str = alloca (base_len + 1);
         base_len = snprintf (base_str, base_len + 1, "%s/%s/%02x/%02x/%s",
-                             priv->meta_base_path, GF_HIDDEN_PATH, gfid[0], gfid[1],
+                             priv->base_path, GF_HIDDEN_PATH, gfid[0], gfid[1],
                              uuid_str);
 
-        pfx_len = priv->meta_base_path_length + 1 + SLEN(GF_HIDDEN_PATH) + 1;
+        pfx_len = priv->base_path_length + 1 + SLEN(GF_HIDDEN_PATH) + 1;
 
         if (basename) {
                 len = snprintf (buf, maxlen, "%s/%s", base_str, basename);
@@ -389,7 +389,7 @@ posix_handle_gfid_path (xlator_t *this, uuid_t gfid, const char *basename,
 
         priv = this->private;
 
-        len = priv->meta_base_path_length  /* option directory "/export" */
+        len = priv->base_path_length  /* option directory "/export" */
                 + SLEN("/")
                 + SLEN(GF_HIDDEN_PATH)
                 + SLEN("/")
@@ -421,10 +421,10 @@ posix_handle_gfid_path (xlator_t *this, uuid_t gfid, const char *basename,
         }
 
         if (basename) {
-                len = snprintf (buf, buflen, "%s/%s/%02x/%02x/%s/%s", priv->meta_base_path,
+                len = snprintf (buf, buflen, "%s/%s/%02x/%02x/%s/%s", priv->base_path,
                                 GF_HIDDEN_PATH, gfid[0], gfid[1], uuid_str, basename);
         } else {
-                len = snprintf (buf, buflen, "%s/%s/%02x/%02x/%s", priv->meta_base_path,
+                len = snprintf (buf, buflen, "%s/%s/%02x/%02x/%s", priv->base_path,
                                 GF_HIDDEN_PATH, gfid[0], gfid[1], uuid_str);
         }
 out:
@@ -438,7 +438,6 @@ posix_handle_init (xlator_t *this)
         struct posix_private *priv = NULL;
         char                 *handle_pfx = NULL;
         int                   ret = 0;
-        int                   len = 0;
         struct stat           stbuf;
         struct stat           rootbuf;
         struct stat           exportbuf;
@@ -454,11 +453,10 @@ posix_handle_init (xlator_t *this)
                 return -1;
         }
 
-        /* different base path */
-        handle_pfx = alloca (priv->meta_base_path_length + 1 + strlen (GF_HIDDEN_PATH)
+        handle_pfx = alloca (priv->base_path_length + 1 + strlen (GF_HIDDEN_PATH)
                              + 1);
 
-        sprintf (handle_pfx, "%s/%s", priv->meta_base_path, GF_HIDDEN_PATH);
+        sprintf (handle_pfx, "%s/%s", priv->base_path, GF_HIDDEN_PATH);
 
         ret = stat (handle_pfx, &stbuf);
         switch (ret) {
@@ -492,9 +490,7 @@ posix_handle_init (xlator_t *this)
 
         stat (handle_pfx, &priv->handledir);
 
-        len = posix_handle_path (this, gfid, NULL, NULL, 0);
-        rootstr = alloca (len);
-        posix_handle_path (this, gfid, NULL, rootstr, len);
+        MAKE_HANDLE_ABSPATH(rootstr, this, gfid);
 
         ret = stat (rootstr, &rootbuf);
         switch (ret) {
@@ -523,7 +519,6 @@ posix_handle_init (xlator_t *this)
                 }
                 break;
         case 0:
-                return 0;  // HACK
                 if ((exportbuf.st_ino == rootbuf.st_ino) &&
                     (exportbuf.st_dev == rootbuf.st_dev))
                         return 0;
@@ -622,8 +617,7 @@ posix_handle_trash_init (xlator_t *this)
 
         priv = this->private;
 
-        /* different base path */
-        priv->trash_path = GF_CALLOC (1, priv->meta_base_path_length + strlen ("/")
+        priv->trash_path = GF_CALLOC (1, priv->base_path_length + strlen ("/")
                                       + strlen (GF_HIDDEN_PATH) + strlen ("/")
                                       + strlen (TRASH_DIR) + 1,
                                       gf_posix_mt_trash_path);
@@ -631,7 +625,7 @@ posix_handle_trash_init (xlator_t *this)
         if (!priv->trash_path)
                 goto out;
 
-        strncpy (priv->trash_path, priv->meta_base_path, priv->meta_base_path_length);
+        strncpy (priv->trash_path, priv->base_path, priv->base_path_length);
         strcat (priv->trash_path, "/" GF_HIDDEN_PATH "/" TRASH_DIR);
         ret = posix_handle_new_trash_init (this, priv->trash_path);
         if (ret)
@@ -686,7 +680,7 @@ posix_handle_hard (xlator_t *this, const char *oldpath, uuid_t gfid, struct stat
         int          ret = -1;
 
 
-        MAKE_HANDLE_PATH (newpath, this, gfid, NULL);
+        MAKE_HANDLE_ABSPATH (newpath, this, gfid);
 
         ret = lstat (newpath, &newbuf);
         if (ret == -1 && errno != ENOENT) {
@@ -704,8 +698,7 @@ posix_handle_hard (xlator_t *this, const char *oldpath, uuid_t gfid, struct stat
                         return -1;
                 }
 
-		//                ret = sys_link (oldpath, newpath);
-                ret = symlink (oldpath, newpath);
+                ret = sys_link (oldpath, newpath);
 
                 if (ret) {
                         gf_log (this->name, GF_LOG_WARNING,
@@ -722,7 +715,7 @@ posix_handle_hard (xlator_t *this, const char *oldpath, uuid_t gfid, struct stat
                         return -1;
                 }
         }
-#if 0
+
         if (newbuf.st_ino != oldbuf->st_ino ||
             newbuf.st_dev != oldbuf->st_dev) {
                 gf_log (this->name, GF_LOG_WARNING,
@@ -732,7 +725,7 @@ posix_handle_hard (xlator_t *this, const char *oldpath, uuid_t gfid, struct stat
                         newpath, (long long) newbuf.st_ino, (long long) newbuf.st_dev);
                 ret = -1;
         }
-#endif
+
         return ret;
 }
 
@@ -745,16 +738,9 @@ posix_handle_soft (xlator_t *this, const char *real_path, loc_t *loc,
         char        *newpath = NULL;
         struct stat  newbuf;
         int          ret = -1;
-        char        *temp_path = NULL;
-        int          base_len = 0;
-        struct posix_private * priv            = NULL;
 
-        priv = this->private;
-
- 
-        MAKE_HANDLE_PATH (newpath, this, gfid, NULL);
+        MAKE_HANDLE_ABSPATH (newpath, this, gfid);
         MAKE_HANDLE_RELPATH (oldpath, this, loc->pargfid, loc->name);
-
 
         ret = lstat (newpath, &newbuf);
         if (ret == -1 && errno != ENOENT) {
@@ -771,22 +757,9 @@ posix_handle_soft (xlator_t *this, const char *real_path, loc_t *loc,
                                 newpath, strerror (errno));
                         return -1;
                 }
-#if 0
-                base_len = (priv->meta_base_path_length + SLEN(GF_HIDDEN_PATH) + 45);
-                temp_path = alloca (base_len + 1);
-                base_len = snprintf (temp_path, base_len + 1, "%s/temp",
-                             priv->meta_base_path);
 
-                ret = rename(temp_path, newpath); /* DAN */
-                 if (ret) {
-                        gf_log (this->name, GF_LOG_WARNING,
-                                "rename %s -> %s failed (%s)",
-                                real_path, newpath, strerror (errno));
-                        return -1;
-                }
-                ret = symlink (newpath, real_path);
-#endif
-      	        ret = symlink (oldpath, newpath);
+                ret = symlink (oldpath, newpath);
+
                 if (ret) {
                         gf_log (this->name, GF_LOG_WARNING,
                                 "symlink %s -> %s failed (%s)",
