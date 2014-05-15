@@ -354,6 +354,7 @@ sys_lsetxattr (const char *path, const char *name, const void *value,
 
 #if defined(GF_LINUX_HOST_OS) || defined(__NetBSD__)
         return lsetxattr (path, name, value, size, flags);
+	//        return setxattr (path, name, value, size, flags);
 #endif
 
 #ifdef GF_BSD_HOST_OS
@@ -402,7 +403,8 @@ sys_lgetxattr (const char *path, const char *name, void *value, size_t size)
 {
 
 #if defined(GF_LINUX_HOST_OS) || defined(__NetBSD__)
-        return lgetxattr (path, name, value, size);
+          return lgetxattr (path, name, value, size);
+  //        return getxattr (path, name, value, size);
 #endif
 
 #ifdef GF_BSD_HOST_OS

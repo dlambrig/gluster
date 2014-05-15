@@ -2129,7 +2129,7 @@ posix_create (call_frame_t *frame, xlator_t *this,
         if (priv->o_direct)
                 _flags |= O_DIRECT;
 
-        _fd = open (base_str, _flags, mode);
+	_fd = open (base_str, _flags, mode);
 
         if (_fd == -1) {
                 op_errno = errno;
@@ -2139,8 +2139,9 @@ posix_create (call_frame_t *frame, xlator_t *this,
                         strerror (op_errno));
                 goto out;
         }
-
+	close(_fd);
 	symlink (base_str, real_path);
+	_fd = open (real_path, O_RDWR | O_EXCL, mode);
 
         if (was_present)
                 goto fill_stat;
