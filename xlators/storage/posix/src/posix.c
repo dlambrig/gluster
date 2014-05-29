@@ -2078,6 +2078,7 @@ posix_create (call_frame_t *frame, xlator_t *this,
         char *                 pgfid_xattr_key = NULL;
         int32_t                base_len        = 0;
         char *                 base_str        = NULL;
+        int i;
 
         DECLARE_OLD_FS_ID_VAR;
 
@@ -2092,10 +2093,13 @@ posix_create (call_frame_t *frame, xlator_t *this,
 
         MAKE_ENTRY_HANDLE (real_path, par_path, this, loc, &stbuf);
 
-        base_len = strlen("/meta/") + strlen(loc->name);
+        base_len = strlen("/"DATADIR) + strlen(real_path);
         base_str = alloca (base_len + 1);
         base_len = snprintf (base_str, base_len + 1, 
-                             "/meta/%s", loc->name);
+                             "/"DATADIR"%s", real_path);
+        for (i=0; i < strlen(real_path); i++)
+          if (base_str[i+DATADIR_LEN+1]=='/')
+            base_str[i+DATADIR_LEN+1]='_';
 
         gid = frame->root->gid;
 
@@ -5221,6 +5225,7 @@ reconfigure (xlator_t *this, dict_t *options)
 
 	priv = this->private;
 
+	//        GF_OPTION_RECONF("storage.metadata-brick", priv->meta_base_path, options, str, out);
         GF_OPTION_RECONF ("brick-uid", uid, options, int32, out);
         GF_OPTION_RECONF ("brick-gid", gid, options, int32, out);
 	if (uid != -1 || gid != -1)
@@ -5308,6 +5313,7 @@ init (xlator_t *this)
         int32_t               uid           = -1;
         int32_t               gid           = -1;
 	char                 *batch_fsync_mode_str;
+        char                 *meta_base_path = NULL;
 
         dir_data = dict_get (this->options, "directory");
 
@@ -5377,6 +5383,7 @@ init (xlator_t *this)
                         goto out;
                 }
         }
+
 
         tmp_data = dict_get (this->options, "volume-id");
         if (tmp_data) {
@@ -5692,6 +5699,9 @@ init (xlator_t *this)
 		goto out;
 	}
 
+        GF_OPTION_INIT ("metadata-brick", meta_base_path, str, out);
+        gf_log (this->name, GF_LOG_WARNING, "got metadata-brick %s", _private->meta_base_path);
+
 	GF_OPTION_INIT ("batch-fsync-mode", batch_fsync_mode_str, str, out);
 
 	if (set_batch_fsync_mode (_private, batch_fsync_mode_str) != 0) {
@@ -5864,6 +5874,11 @@ struct volume_options options[] = {
 	  "\t- reverse-fsync: Perform fsync() of each file in the batch in"
 	  " reverse order."
 	},
+	{ .key = {"metadata-brick"},
+	  .type = GF_OPTION_TYPE_STR,
+	  .default_value = "0",
+	  .description = "Path of metadata",
+	},        
 	{ .key = {"batch-fsync-delay-usec"},
 	  .type = GF_OPTION_TYPE_INT,
 	  .default_value = "0",

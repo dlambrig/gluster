@@ -1490,6 +1490,10 @@ struct volopt_map_entry glusterd_volopt_map[] = {
           .op_version = 2,
           .flags      = OPT_FLAG_CLIENT_OPT | OPT_FLAG_XLATOR_OPT
         },
+        { .key         = "storage.metadata-brick",
+          .voltype     = "storage/posix",
+          .op_version  = 1
+        },
         { .key         = "storage.linux-aio",
           .voltype     = "storage/posix",
           .op_version  = 1

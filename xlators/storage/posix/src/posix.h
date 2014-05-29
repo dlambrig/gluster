@@ -53,6 +53,10 @@
 #define VECTOR_SIZE 64 * 1024 /* vector size 64KB*/
 #define MAX_NO_VECT 1024
 
+#define DATADIR "home/datahome"
+//#define DATADIR "export/sdb1"
+#define DATADIR_LEN strlen(DATADIR)
+
 #define POSIX_GFID_HANDLE_SIZE(base_path_len) (base_path_len + SLEN("/") \
                                                + SLEN(GF_HIDDEN_PATH) + SLEN("/") \
                                                + SLEN("00/")            \
