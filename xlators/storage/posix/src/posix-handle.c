@@ -761,7 +761,6 @@ posix_handle_soft (xlator_t *this, const char *real_path, loc_t *loc,
                 }
 
                 ret = symlink (oldpath, newpath);
-
                 if (ret) {
                         gf_log (this->name, GF_LOG_WARNING,
                                 "symlink %s -> %s failed (%s)",

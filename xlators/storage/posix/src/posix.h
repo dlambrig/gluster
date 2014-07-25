@@ -72,14 +72,10 @@ struct posix_fd {
         struct list_head list; /* to add to the janitor list */
 };
 
-//#define meta_base_path base_path
-//#define meta_base_path_length base_path_length
+
 struct posix_private {
 	char   *base_path;
 	int32_t base_path_length;
-
-  	char   *meta_base_path;
-  	int32_t meta_base_path_length;
 
         gf_lock_t lock;
 
@@ -164,6 +160,16 @@ struct posix_private {
         uint32_t        health_check_interval;
         pthread_t       health_check;
         gf_boolean_t    health_check_active;
+
+#ifdef GF_DARWIN_HOST_OS
+        enum {
+                XATTR_NONE = 0,
+                XATTR_STRIP,
+                XATTR_APPEND,
+                XATTR_BOTH,
+        } xattr_user_namespace;
+#endif
+
 };
 
 typedef struct {

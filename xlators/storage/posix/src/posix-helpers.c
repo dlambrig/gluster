@@ -391,26 +391,10 @@ posix_fill_gfid_fd (xlator_t *this, int fd, struct iatt *iatt)
         int ret = 0;
         ssize_t size = 0;
 
-        char tmp[60],p[60];
-        int len,i,first;
-
         if (!iatt)
                 return 0;
 
-
-	sprintf(tmp,"/proc/self/fd/%d",fd);
-        len = readlink(tmp,p,60);
-        p[len]=0;
-        first = 0;
-        for (i=6; i<len; i++)
-          if (p[i]=='_') {
-	    if (!first)
-              first=i; 
-            p[i]='/';
-          }
-        sprintf(tmp,"%s",p+first);
-        size = sys_lgetxattr(tmp,GFID_XATTR_KEY, iatt->ia_gfid, 16);
-	//        size = sys_fgetxattr (fd, GFID_XATTR_KEY, iatt->ia_gfid, 16);
+        size = sys_fgetxattr (fd, GFID_XATTR_KEY, iatt->ia_gfid, 16);
         /* Return value of getxattr */
         if ((size == 16) || (size == -1))
                 ret = 0;
