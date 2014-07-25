@@ -123,10 +123,11 @@ typedef struct {
 } nodesrv_t;
 
 typedef struct {
-        gf_boolean_t    quorum;
-        double          quorum_ratio;
-        uint64_t        gl_opt_version;
-} gd_global_opts_t;
+        struct rpc_clnt   *rpc;
+        int                port;
+        gf_boolean_t       online;
+        gf_store_handle_t *handle;
+} glusterd_snapd_t;
 
 typedef struct {
         struct _volfile_ctx     *volfile;
@@ -173,8 +174,6 @@ typedef struct {
         gf_boolean_t               restart_done;
         rpcsvc_t                  *uds_rpc; /* RPCSVC for the unix domain socket */
         uint32_t                   base_port;
-        uint64_t                   snap_max_hard_limit;
-        uint64_t                   snap_max_soft_limit;
         char                      *snap_bricks_directory;
         gf_store_handle_t         *missed_snaps_list_shandle;
         struct list_head           missed_snaps_list;
@@ -191,7 +190,9 @@ struct glusterd_brickinfo {
         char               hostname[1024];
         char               path[PATH_MAX];
         char               device_path[PATH_MAX];
+        char               mount_dir[PATH_MAX];
         char               brick_id[1024];/*Client xlator name, AFR changelog name*/
+        char               fstype [NAME_MAX]; /* Brick file-system type */
         struct list_head   brick_list;
         uuid_t             uuid;
         int                port;
@@ -294,6 +295,12 @@ struct glusterd_replace_brick_ {
 
 typedef struct glusterd_replace_brick_ glusterd_replace_brick_t;
 
+typedef enum gd_quorum_status_ {
+        NOT_APPLICABLE_QUORUM, //Does not follow quorum
+        MEETS_QUORUM, //Follows quorum and meets.
+        DOESNT_MEET_QUORUM, //Follows quorum and does not meet.
+} gd_quorum_status_t;
+
 struct glusterd_volinfo_ {
         gf_lock_t                 lock;
         gf_boolean_t              is_snap_volume;
@@ -329,6 +336,8 @@ struct glusterd_volinfo_ {
         int                       sub_count;  /* backward compatibility */
         int                       stripe_count;
         int                       replica_count;
+        int                       disperse_count;
+        int                       redundancy_count;
         int                       subvol_count; /* Number of subvolumes in a
                                                  distribute volume */
         int                       dist_leaf_count; /* Number of bricks in one
@@ -370,6 +379,9 @@ struct glusterd_volinfo_ {
         int                       client_op_version;
         pthread_mutex_t           reflock;
         int                       refcnt;
+        gd_quorum_status_t        quorum_status;
+
+        glusterd_snapd_t          snapd;
 };
 
 typedef enum gd_snap_status_ {
@@ -417,6 +429,7 @@ typedef enum gd_node_type_ {
         GD_NODE_REBALANCE,
         GD_NODE_NFS,
         GD_NODE_QUOTAD,
+        GD_NODE_SNAPD,
 } gd_node_type;
 
 typedef enum missed_snap_stat {
@@ -457,6 +470,7 @@ enum glusterd_vol_comp_status_ {
 #define GLUSTERD_VOLUME_DIR_PREFIX "vols"
 #define GLUSTERD_PEER_DIR_PREFIX "peers"
 #define GLUSTERD_VOLUME_INFO_FILE "info"
+#define GLUSTERD_VOLUME_SNAPD_INFO_FILE "snapd.info"
 #define GLUSTERD_SNAP_INFO_FILE "info"
 #define GLUSTERD_VOLUME_RBSTATE_FILE "rbstate"
 #define GLUSTERD_BRICK_INFO_DIR "bricks"
@@ -629,7 +643,7 @@ glusterd_brick_from_brickinfo (glusterd_brickinfo_t *brickinfo,
                                char **new_brick);
 int
 glusterd_probe_begin (rpcsvc_request_t *req, const char *hoststr, int port,
-                      dict_t *dict);
+                      dict_t *dict, int *op_errno);
 
 int
 glusterd_xfer_friend_add_resp (rpcsvc_request_t *req, char *myhostname,
@@ -637,15 +651,15 @@ glusterd_xfer_friend_add_resp (rpcsvc_request_t *req, char *myhostname,
                                int32_t op_errno);
 
 int
-glusterd_friend_find (uuid_t uuid, char *hostname,
-                      glusterd_peerinfo_t **peerinfo);
-
-int
 glusterd_friend_add (const char *hoststr, int port,
                      glusterd_friend_sm_state_t state,
                      uuid_t *uuid, glusterd_peerinfo_t **friend,
                      gf_boolean_t restore, glusterd_peerctx_args_t *args);
 
+int
+glusterd_friend_add_from_peerinfo (glusterd_peerinfo_t *friend,
+                                   gf_boolean_t restore,
+                                   glusterd_peerctx_args_t *args);
 int
 glusterd_friend_rpc_create (xlator_t *this, glusterd_peerinfo_t *peerinfo,
                             glusterd_peerctx_args_t *args);
@@ -723,7 +737,7 @@ glusterd_xfer_friend_remove_resp (rpcsvc_request_t *req, char *hostname, int por
 
 int
 glusterd_deprobe_begin (rpcsvc_request_t *req, const char *hoststr, int port,
-                        uuid_t uuid, dict_t *dict);
+                        uuid_t uuid, dict_t *dict, int *op_errno);
 
 int
 glusterd_handle_cli_deprobe (rpcsvc_request_t *req);
@@ -854,6 +868,10 @@ glusterd_brick_rpc_notify (struct rpc_clnt *rpc, void *mydata,
                           rpc_clnt_event_t event, void *data);
 
 int
+glusterd_snapd_rpc_notify (struct rpc_clnt *rpc, void *mydata,
+                             rpc_clnt_event_t event, void *data);
+
+int
 glusterd_nodesvc_rpc_notify (struct rpc_clnt *rpc, void *mydata,
                              rpc_clnt_event_t event, void *data);
 
@@ -903,8 +921,10 @@ int glusterd_op_stage_replace_brick (dict_t *dict, char **op_errstr,
 int glusterd_op_replace_brick (dict_t *dict, dict_t *rsp_dict);
 int glusterd_op_log_rotate (dict_t *dict);
 int glusterd_op_stage_log_rotate (dict_t *dict, char **op_errstr);
-int glusterd_op_stage_create_volume (dict_t *dict, char **op_errstr);
-int glusterd_op_stage_start_volume (dict_t *dict, char **op_errstr);
+int glusterd_op_stage_create_volume (dict_t *dict, char **op_errstr,
+                                     dict_t *rsp_dict);
+int glusterd_op_stage_start_volume (dict_t *dict, char **op_errstr,
+                                    dict_t *rsp_dict);
 int glusterd_op_stage_stop_volume (dict_t *dict, char **op_errstr);
 int glusterd_op_stage_delete_volume (dict_t *dict, char **op_errstr);
 int glusterd_op_create_volume (dict_t *dict, char **op_errstr);
@@ -914,7 +934,8 @@ int glusterd_op_delete_volume (dict_t *dict);
 
 int glusterd_op_add_brick (dict_t *dict, char **op_errstr);
 int glusterd_op_remove_brick (dict_t *dict, char **op_errstr);
-int glusterd_op_stage_add_brick (dict_t *dict, char **op_errstr);
+int glusterd_op_stage_add_brick (dict_t *dict, char **op_errstr,
+                                 dict_t *rsp_dict);
 int glusterd_op_stage_remove_brick (dict_t *dict, char **op_errstr);
 
 int glusterd_op_stage_rebalance (dict_t *dict, char **op_errstr);
@@ -941,7 +962,9 @@ int glusterd_op_statedump_volume_args_get (dict_t *dict, char **volname,
 int glusterd_op_gsync_args_get (dict_t *dict, char **op_errstr,
                                 char **master, char **slave, char **host_uuid);
 
-int glusterd_start_volume (glusterd_volinfo_t *volinfo, int flags);
+int glusterd_start_volume (glusterd_volinfo_t *volinfo, int flags,
+                           gf_boolean_t wait);
+
 int glusterd_stop_volume (glusterd_volinfo_t *volinfo);
 
 /* Synctask part */
@@ -990,7 +1013,9 @@ int
 glusterd_snapshot_postvalidate (dict_t *dict, int32_t op_ret, char **op_errstr,
                                 dict_t *rsp_dict);
 char *
-glusterd_build_snap_device_path (char *device, char *snapname);
+glusterd_build_snap_device_path (char *device, char *snapname,
+                                 int32_t brick_count);
+
 int32_t
 glusterd_snap_remove (dict_t *rsp_dict, glusterd_snap_t *snap,
                       gf_boolean_t remove_lvm, gf_boolean_t force);
@@ -1007,4 +1032,14 @@ glusterd_add_new_entry_to_list (char *missed_info, char *snap_vol_id,
 
 int
 glusterd_snapshot_revert_restore_from_snap (glusterd_snap_t *snap);
+
+
+int
+glusterd_add_brick_status_to_dict (dict_t *dict, glusterd_volinfo_t *volinfo,
+                                   glusterd_brickinfo_t *brickinfo,
+                                   char *key_prefix);
+
+int32_t
+glusterd_handle_snap_limit (dict_t *dict, dict_t *rsp_dict);
+
 #endif

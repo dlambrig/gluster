@@ -60,6 +60,15 @@
  * glfs_h_create_from_handle */
 #define GFAPI_HANDLE_LENGTH 16
 
+/* Portability non glibc c++ build systems */
+#ifndef __THROW
+# if defined __cplusplus
+#  define __THROW       throw ()
+# else
+#  define __THROW
+# endif
+#endif
+
 __BEGIN_DECLS
 
 /*
@@ -152,6 +161,9 @@ struct glfs_fd *glfs_h_opendir (struct glfs *fs,
 
 struct glfs_fd *glfs_h_open (struct glfs *fs, struct glfs_object *object,
 			     int flags) __THROW;
+
+int
+glfs_h_access (struct glfs *fs, struct glfs_object *object, int mask) __THROW;
 
 __END_DECLS
 

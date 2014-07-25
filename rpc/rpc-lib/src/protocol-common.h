@@ -69,6 +69,8 @@ enum gf_handshake_procnum {
         GF_HNDSK_PING,
         GF_HNDSK_SET_LK_VER,
         GF_HNDSK_EVENT_NOTIFY,
+        GF_HNDSK_GET_VOLUME_INFO,
+        GF_HNDSK_GET_SNAPSHOT_INFO,
         GF_HNDSK_MAXVALUE,
 };
 
@@ -110,6 +112,7 @@ enum gf_probe_resp {
         GF_PROBE_QUORUM_NOT_MET,
         GF_PROBE_MISSED_SNAP_CONFLICT,
         GF_PROBE_SNAP_CONFLICT,
+        GF_PROBE_FRIEND_DETACHING,
 };
 
 enum gf_deprobe_resp {
@@ -119,6 +122,7 @@ enum gf_deprobe_resp {
         GF_DEPROBE_BRICK_EXIST,
         GF_DEPROBE_FRIEND_DOWN,
         GF_DEPROBE_QUORUM_NOT_MET,
+        GF_DEPROBE_FRIEND_DETACHING,
 };
 
 enum gf_cbk_procnum {
@@ -240,6 +244,9 @@ struct gf_gsync_detailed_status_ {
         char bytes_remaining[NAME_MAX];
         char purges_remaining[NAME_MAX];
         char total_files_skipped[NAME_MAX];
+        char brick_host_uuid[NAME_MAX];
+        char slavekey[NAME_MAX];
+        char session_slave[NAME_MAX];
 };
 
 enum glusterd_mgmt_v3_procnum {
@@ -254,6 +261,19 @@ enum glusterd_mgmt_v3_procnum {
 };
 
 typedef struct gf_gsync_detailed_status_ gf_gsync_status_t;
+
+enum gf_get_volume_info_type {
+        GF_GET_VOLUME_NONE,    /* 0 */
+        GF_GET_VOLUME_UUID
+};
+
+typedef enum gf_get_volume_info_type gf_get_volume_info_type;
+
+
+enum gf_get_snapshot_info_type {
+        GF_GET_SNAPSHOT_LIST,
+};
+typedef enum gf_get_snapshot_info_type gf_get_snapshot_info_type;
 
 #define GLUSTER_HNDSK_PROGRAM    14398633 /* Completely random */
 #define GLUSTER_HNDSK_VERSION    2   /* 0.0.2 */

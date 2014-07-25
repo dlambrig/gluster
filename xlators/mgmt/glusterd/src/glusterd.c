@@ -40,6 +40,7 @@
 #include "glusterd-locks.h"
 #include "common-utils.h"
 #include "run.h"
+#include "rpc-clnt-ping.h"
 
 #include "syncop.h"
 
@@ -53,7 +54,7 @@ extern struct rpcsvc_program gd_svc_mgmt_prog;
 extern struct rpcsvc_program gd_svc_mgmt_v3_prog;
 extern struct rpcsvc_program gd_svc_peer_prog;
 extern struct rpcsvc_program gd_svc_cli_prog;
-extern struct rpcsvc_program gd_svc_cli_prog_ro;
+extern struct rpcsvc_program gd_svc_cli_trusted_progs;
 extern struct rpc_clnt_program gd_brick_prog;
 extern struct rpcsvc_program glusterd_mgmt_hndsk_prog;
 
@@ -67,7 +68,7 @@ rpcsvc_cbk_program_t glusterd_cbk_prog = {
 
 struct rpcsvc_program *gd_inet_programs[] = {
         &gd_svc_peer_prog,
-        &gd_svc_cli_prog_ro,
+        &gd_svc_cli_trusted_progs, /* Must be index 1 for secure_mgmt! */
         &gd_svc_mgmt_prog,
         &gd_svc_mgmt_v3_prog,
         &gluster_pmap_prog,
@@ -198,20 +199,21 @@ glusterd_options_init (xlator_t *this)
                 goto out;
 
         ret = glusterd_store_retrieve_options (this);
-        if (ret == 0)
+        if (ret == 0) {
                 goto out;
+        }
 
         ret = dict_set_str (priv->opts, GLUSTERD_GLOBAL_OPT_VERSION,
                             initial_version);
         if (ret)
                 goto out;
+
         ret = glusterd_store_options (this, priv->opts);
         if (ret) {
                 gf_log (this->name, GF_LOG_ERROR, "Unable to store version");
                 return ret;
         }
 out:
-
         return 0;
 }
 int
@@ -953,32 +955,6 @@ _install_mount_spec (dict_t *opts, char *key, data_t *value, void *data)
 }
 
 
-static int
-gd_default_synctask_cbk (int ret, call_frame_t *frame, void *opaque)
-{
-        glusterd_conf_t     *priv = THIS->private;
-        synclock_unlock (&priv->big_lock);
-        return ret;
-}
-
-static void
-glusterd_launch_synctask (synctask_fn_t fn, void *opaque)
-{
-        xlator_t        *this = NULL;
-        glusterd_conf_t *priv = NULL;
-        int             ret   = -1;
-
-        this = THIS;
-        priv = this->private;
-
-        synclock_lock (&priv->big_lock);
-        ret = synctask_new (this->ctx->env, fn, gd_default_synctask_cbk, NULL,
-                            opaque);
-        if (ret)
-                gf_log (this->name, GF_LOG_CRITICAL, "Failed to spawn bricks"
-                        " and other volume related services");
-}
-
 int
 glusterd_uds_rpcsvc_notify (rpcsvc_t *rpc, void *xl, rpcsvc_event_t event,
                             void *data)
@@ -1211,7 +1187,7 @@ init (xlator_t *this)
 
 
         if ((-1 == ret) && (ENOENT == errno)) {
-                ret = mkdir (workdir, 0777);
+                ret = mkdir_p (workdir, 0777, _gf_true);
 
                 if (-1 == ret) {
                         gf_log (this->name, GF_LOG_CRITICAL,
@@ -1340,8 +1316,34 @@ init (xlator_t *this)
                 goto out;
         }
 
+        if (this->ctx->secure_mgmt) {
+                /*
+                 * The socket code will turn on SSL based on the same check,
+                 * but that will by default turn on own-thread as well and
+                 * we're not multi-threaded enough to handle that.  Thus, we
+                 * override the value here.
+                 */
+                ret = dict_set_str (this->options,
+                                    "transport.socket.own-thread", "off");
+                if (ret != 0) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "failed to clear own-thread");
+                        goto out;
+                }
+                /*
+                 * With strong authentication, we can afford to allow
+                 * privileged operations over TCP.
+                 */
+                gd_inet_programs[1] = &gd_svc_cli_prog;
+                /*
+                 * This is the only place where we want secure_srvr to reflect
+                 * the management-plane setting.
+                 */
+                this->ctx->secure_srvr = MGMT_SSL_ALWAYS;
+        }
+
         /*
-         * only one (atmost a pair - rdma and socket) listener for
+         * only one (at most a pair - rdma and socket) listener for
          * glusterd1_mop_prog, gluster_pmap_prog and gluster_handshake_prog.
          */
         ret = rpcsvc_create_listeners (rpc, this->options, this->name);
@@ -1365,9 +1367,10 @@ init (xlator_t *this)
                 }
         }
 
-        /* Start a unix domain socket listener just for cli commands
-         * This should prevent ports from being wasted by being in TIMED_WAIT
-         * when cli commands are done continuously
+        /*
+         * Start a unix domain socket listener just for cli commands This
+         * should prevent ports from being wasted by being in TIMED_WAIT when
+         * cli commands are done continuously
          */
         uds_rpc = glusterd_init_uds_listener (this);
         if (uds_rpc == NULL) {
@@ -1649,10 +1652,10 @@ struct volume_options options[] = {
           .description = "directory where the bricks for the snapshots will be created"
         },
         { .key  = {"ping-timeout"},
-          .type = GF_OPTION_TYPE_INT,
-          .min  = 1,
-          .max  = 100,
-          .default_value = "30",
+          .type = GF_OPTION_TYPE_TIME,
+          .min  = 0,
+          .max  = 300,
+          .default_value = TOSTRING(RPC_DEFAULT_PING_TIMEOUT),
         },
         { .key   = {NULL} },
 };

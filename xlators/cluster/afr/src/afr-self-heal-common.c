@@ -844,7 +844,8 @@ afr_selfheal_unlocked_inspect (call_frame_t *frame, xlator_t *this,
 		}
 
 		if (!IA_EQUAL (first, replies[i].poststat, type)) {
-			gf_log (this->name, GF_LOG_ERROR,
+			gf_msg (this->name, GF_LOG_ERROR, 0,
+                                AFR_MSG_SPLIT_BRAIN,
 				"TYPE mismatch %d vs %d on %s for gfid:%s",
 				(int) first.ia_type,
 				(int) replies[i].poststat.ia_type,
@@ -907,7 +908,7 @@ afr_selfheal_unlocked_inspect (call_frame_t *frame, xlator_t *this,
                         goto out;
                 }
         } else if (valid_cnt < 2) {
-		ret = -ENOTCONN;
+                ret = -ENOTCONN;
                 goto out;
         }
 
@@ -946,10 +947,10 @@ afr_inode_find (xlator_t *this, uuid_t gfid)
 call_frame_t *
 afr_frame_create (xlator_t *this)
 {
-	call_frame_t *frame = NULL;
-	afr_local_t *local = NULL;
-	int op_errno = 0;
-	pid_t pid = -1;
+	call_frame_t *frame    = NULL;
+	afr_local_t  *local    = NULL;
+	int           op_errno = 0;
+	pid_t         pid      = GF_CLIENT_PID_AFR_SELF_HEALD;
 
 	frame = create_frame (this, this->ctx->pool);
 	if (!frame)

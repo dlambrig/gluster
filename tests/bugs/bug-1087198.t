@@ -14,6 +14,8 @@
 
 . $(dirname $0)/../include.rc
 . $(dirname $0)/../fileio.rc
+. $(dirname $0)/../volume.rc
+. $(dirname $0)/../nfs.rc
 
 cleanup;
 
@@ -29,7 +31,8 @@ EXPECT 'Created' volinfo_field $V0 'Status';
 TEST $CLI volume start $V0;
 EXPECT 'Started' volinfo_field $V0 'Status';
 
-TEST mount -t nfs -o noac,soft,nolock,vers=3 $H0:/$V0 $N0
+EXPECT_WITHIN $NFS_EXPORT_TIMEOUT "1" is_nfs_export_available;
+TEST mount_nfs $H0:/$V0 $N0 noac,nolock
 
 
 QUOTA_LIMIT_DIR="quota_limit_dir"
@@ -49,10 +52,10 @@ TEST $CLI volume quota $V0 limit-usage /$QUOTA_LIMIT_DIR 100KB
 
 #16
 ## Step 3 and 4
-TEST dd if=/dev/urandom of=$N0/$QUOTA_LIMIT_DIR/95KB_file bs=1K count=95
+TEST dd if=/dev/urandom of=$N0/$QUOTA_LIMIT_DIR/95KB_file bs=1k count=95
 TEST grep -e "\"Usage crossed soft limit:.*used by /$QUOTA_LIMIT_DIR\"" -- $BRICK_LOG_DIR/*
 
-TEST dd if=/dev/urandom of=$N0/100KB_file bs=1K count=100
+TEST dd if=/dev/urandom of=$N0/100KB_file bs=1k count=100
 TEST grep -e "\"Usage crossed soft limit:.*used by /\"" -- $BRICK_LOG_DIR/*
 
 #20
@@ -60,15 +63,15 @@ TEST grep -e "\"Usage crossed soft limit:.*used by /\"" -- $BRICK_LOG_DIR/*
 TEST sleep 10
 
 ## Step 6
-TEST dd if=/dev/urandom of=$N0/$QUOTA_LIMIT_DIR/1KB_file bs=1K count=1
+TEST dd if=/dev/urandom of=$N0/$QUOTA_LIMIT_DIR/1KB_file bs=1k count=1
 TEST grep -e "\"Usage is above soft limit:.*used by /$QUOTA_LIMIT_DIR\"" -- $BRICK_LOG_DIR/*
 
 #23
-TEST dd if=/dev/urandom of=$N0/1KB_file bs=1K count=1
+TEST dd if=/dev/urandom of=$N0/1KB_file bs=1k count=1
 TEST grep -e "\"Usage is above soft limit:.*used by /\"" -- $BRICK_LOG_DIR/*
 
 #25
 ## Step 7
-TEST umount -f $N0
+EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $N0
 
 cleanup;

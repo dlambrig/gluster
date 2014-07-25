@@ -61,7 +61,7 @@ rpcsvc_notify (rpc_transport_t *trans, void *mydata,
                rpc_transport_event_t event, void *data, ...);
 
 static int
-match_subnet_v4 (const char *addrtok, const char *ipaddr);
+rpcsvc_match_subnet_v4 (const char *addrtok, const char *ipaddr);
 
 rpcsvc_notify_wrapper_t *
 rpcsvc_notify_wrapper_alloc (void)
@@ -117,6 +117,7 @@ rpcsvc_get_program_vector_sizer (rpcsvc_t *svc, uint32_t prognum,
 
         pthread_mutex_lock (&svc->rpclock);
         {
+                /* Find the matching RPC program from registered list */
                 list_for_each_entry (program, &svc->programs, program) {
                         if ((program->prognum == prognum)
                             && (program->progver == progver)) {
@@ -127,10 +128,20 @@ rpcsvc_get_program_vector_sizer (rpcsvc_t *svc, uint32_t prognum,
         }
         pthread_mutex_unlock (&svc->rpclock);
 
-        if (found)
+        if (found) {
+                /* Make sure the requested procnum is supported by RPC prog */
+                if ((procnum < 0) || (procnum >= program->numactors)) {
+                        gf_log (GF_RPCSVC, GF_LOG_ERROR,
+                                "RPC procedure %d not available for Program %s",
+                                procnum, program->progname);
+                        return NULL;
+                }
+
+                /* SUCCESS: Supported procedure */
                 return program->actors[procnum].vector_sizer;
-        else
-                return NULL;
+        }
+
+        return NULL; /* FAIL */
 }
 
 gf_boolean_t
@@ -601,7 +612,7 @@ rpcsvc_handle_rpc_call (rpcsvc_t *svc, rpc_transport_t *trans,
 
         if (0 == svc->allow_insecure && unprivileged && !actor->unprivileged) {
                         /* Non-privileged user, fail request */
-                        gf_log ("glusterd", GF_LOG_ERROR,
+                        gf_log (GF_RPCSVC, GF_LOG_ERROR,
                                 "Request received from non-"
                                 "privileged port. Failing request");
                         rpcsvc_request_destroy (req);
@@ -1977,11 +1988,17 @@ rpcsvc_reconfigure_options (rpcsvc_t *svc, dict_t *options)
                         return (-1);
                 }
 
-                /* If found the srchkey, delete old key/val pair
-                 * and set the key with new value.
+                /* key-string: rpc-auth.addr.<volname>.allow
+                 *
+                 * IMP: Delete the OLD key/value pair from dict.
+                 * And set the NEW key/value pair IFF the option is SET
+                 * in reconfigured volfile.
+                 *
+                 * NB: If rpc-auth.addr.<volname>.allow is not SET explicitly,
+                 *     build_nfs_graph() sets it as "*" i.e. anonymous.
                  */
+                dict_del (svc->options, srchkey);
                 if (!dict_get_str (options, srchkey, &keyval)) {
-                        dict_del (svc->options, srchkey);
                         ret = dict_set_str (svc->options, srchkey, keyval);
                         if (ret < 0) {
                                 gf_log (GF_RPCSVC, GF_LOG_ERROR,
@@ -2005,11 +2022,16 @@ rpcsvc_reconfigure_options (rpcsvc_t *svc, dict_t *options)
                         return (-1);
                 }
 
-                /* If found the srchkey, delete old key/val pair
-                 * and set the key with new value.
+                /* key-string: rpc-auth.addr.<volname>.reject
+                 *
+                 * IMP: Delete the OLD key/value pair from dict.
+                 * And set the NEW key/value pair IFF the option is SET
+                 * in reconfigured volfile.
+                 *
+                 * NB: No default value for reject key.
                  */
+                dict_del (svc->options, srchkey);
                 if (!dict_get_str (options, srchkey, &keyval)) {
-                        dict_del (svc->options, srchkey);
                         ret = dict_set_str (svc->options, srchkey, keyval);
                         if (ret < 0) {
                                 gf_log (GF_RPCSVC, GF_LOG_ERROR,
@@ -2243,9 +2265,9 @@ rpcsvc_transport_peer_check_search (dict_t *options, char *pattern,
                                 goto err;
                 }
 
-                /* Compare IPv4 subnetwork */
+                /* Compare IPv4 subnetwork, TODO: IPv6 subnet support */
                 if (strchr (addrtok, '/')) {
-                        ret = match_subnet_v4 (addrtok, ip);
+                        ret = rpcsvc_match_subnet_v4 (addrtok, ip);
                         if (ret == 0)
                                 goto err;
                 }
@@ -2543,9 +2565,9 @@ out:
 }
 
 /*
- * match_subnet_v4() takes subnetwork address pattern and checks
- * if the target IPv4 address has the same network address with
- * the help of network mask.
+ * rpcsvc_match_subnet_v4() takes subnetwork address pattern and checks
+ * if the target IPv4 address has the same network address with the help
+ * of network mask.
  *
  * Returns 0 for SUCCESS and -1 otherwise.
  *
@@ -2553,12 +2575,12 @@ out:
  *     as it's already being done at the time of CLI SET.
  */
 static int
-match_subnet_v4 (const char *addrtok, const char *ipaddr)
+rpcsvc_match_subnet_v4 (const char *addrtok, const char *ipaddr)
 {
         char                 *slash     = NULL;
         char                 *netaddr   = NULL;
-        long                  prefixlen = -1;
         int                   ret       = -1;
+        uint32_t              prefixlen = 0;
         uint32_t              shift     = 0;
         struct sockaddr_in    sin1      = {0, };
         struct sockaddr_in    sin2      = {0, };
@@ -2580,39 +2602,29 @@ match_subnet_v4 (const char *addrtok, const char *ipaddr)
                 goto out;
 
         /*
-         * Find the network mask in network byte order.
-         * NB: 32 : Max len of IPv4 address.
+         * Find the IPv4 network mask in network byte order.
+         * IMP: String slash+1 is already validated, it cant have value
+         * more than IPv4_ADDR_SIZE (32).
          */
-        prefixlen = atoi (slash + 1);
-        shift = 32 - (uint32_t)prefixlen;
+        prefixlen = (uint32_t) atoi (slash + 1);
+        shift = IPv4_ADDR_SIZE - prefixlen;
         mask.sin_addr.s_addr = htonl ((uint32_t)~0 << shift);
 
-        /*
-         * Check if both have same network address.
-         * Extract the network address from the IP addr by applying the
-         * network mask. If they match, return SUCCESS. i.e.
-         *
-         * (x == y) <=> (x ^ y == 0)
-         * (x & y) ^ (x & z) <=> x & (y ^ z)
-         *
-         * ((ip1 & mask) == (ip2 & mask)) <=> ((mask & (ip1 ^ ip2)) == 0)
-         */
-        if (((mask.sin_addr.s_addr) &
-             (sin1.sin_addr.s_addr ^ sin2.sin_addr.s_addr)) != 0)
-                goto out;
-
-        ret = 0; /* SUCCESS */
+        if (mask_match (sin1.sin_addr.s_addr,
+                        sin2.sin_addr.s_addr,
+                        mask.sin_addr.s_addr)) {
+                ret = 0; /* SUCCESS */
+        }
 out:
         GF_FREE (netaddr);
         return ret;
 }
 
 
-rpcsvc_actor_t gluster_dump_actors[] = {
+rpcsvc_actor_t gluster_dump_actors[GF_DUMP_MAXVALUE] = {
         [GF_DUMP_NULL]      = {"NULL",     GF_DUMP_NULL,     NULL,        NULL, 0, DRC_NA},
         [GF_DUMP_DUMP]      = {"DUMP",     GF_DUMP_DUMP,     rpcsvc_dump, NULL, 0, DRC_NA},
         [GF_DUMP_PING]      = {"PING",     GF_DUMP_PING,     rpcsvc_ping, NULL, 0, DRC_NA},
-        [GF_DUMP_MAXVALUE]  = {"MAXVALUE", GF_DUMP_MAXVALUE, NULL,        NULL, 0, DRC_NA},
 };
 
 
@@ -2621,5 +2633,5 @@ struct rpcsvc_program gluster_dump_prog = {
         .prognum   = GLUSTER_DUMP_PROGRAM,
         .progver   = GLUSTER_DUMP_VERSION,
         .actors    = gluster_dump_actors,
-        .numactors = sizeof (gluster_dump_actors) / sizeof (gluster_dump_actors[0]) - 1,
+        .numactors = GF_DUMP_MAXVALUE,
 };

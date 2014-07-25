@@ -17,12 +17,35 @@
 #include "defaults.h"
 #include "logging.h"
 #include "iobuf.h"
+#include "syscall.h"
 
 #include "changelog-helpers.h"
 #include "changelog-mem-types.h"
 
 #include "changelog-encoders.h"
 #include <pthread.h>
+
+inline void
+__mask_cancellation (xlator_t *this)
+{
+        int ret = 0;
+
+        ret = pthread_setcancelstate (PTHREAD_CANCEL_DISABLE, NULL);
+        if (ret)
+                gf_log (this->name, GF_LOG_WARNING,
+                        "failed to disable thread cancellation");
+}
+
+inline void
+__unmask_cancellation (xlator_t *this)
+{
+        int ret = 0;
+
+        ret = pthread_setcancelstate (PTHREAD_CANCEL_ENABLE, NULL);
+        if (ret)
+                gf_log (this->name, GF_LOG_WARNING,
+                        "failed to enable thread cancellation");
+}
 
 static void
 changelog_cleanup_free_mutex (void *arg_mutex)
@@ -118,18 +141,62 @@ inline int
 changelog_write (int fd, char *buffer, size_t len)
 {
         ssize_t size = 0;
-        size_t writen = 0;
+        size_t written = 0;
 
-        while (writen < len) {
+        while (written < len) {
                 size = write (fd,
-                              buffer + writen, len - writen);
+                              buffer + written, len - written);
                 if (size <= 0)
                         break;
 
-                writen += size;
+                written += size;
         }
 
-        return (writen != len);
+        return (written != len);
+}
+
+int
+htime_update (xlator_t *this,
+              changelog_priv_t *priv, unsigned long ts,
+              char * buffer)
+{
+        char changelog_path[PATH_MAX+1]   = {0,};
+        int len                           = -1;
+        char x_value[25]                  = {0,};
+        /* time stamp(10) + : (1) + rolltime (12 ) + buffer (2) */
+        int ret                           = 0;
+
+        if (priv->htime_fd ==-1) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "Htime fd not available for updation");
+                ret = -1;
+                goto out;
+        }
+        strcpy (changelog_path, buffer);
+        len = strlen (changelog_path);
+        changelog_path[len] = '\0'; /* redundant */
+
+        if (changelog_write (priv->htime_fd, (void*) changelog_path, len+1 ) < 0) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "Htime file content write failed");
+                ret =-1;
+                goto out;
+        }
+
+        sprintf (x_value,"%lu:%d",ts, priv->rollover_count);
+
+        if (sys_fsetxattr (priv->htime_fd, HTIME_KEY, x_value,
+                       strlen (x_value),  XATTR_REPLACE)) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "Htime xattr updation failed, "
+                        "reason (%s)",strerror (errno));
+                goto out;
+        }
+
+        priv->rollover_count +=1;
+
+out:
+        return ret;
 }
 
 static int
@@ -165,12 +232,22 @@ changelog_rollover_changelog (xlator_t *this,
 
         if (ret && (errno == ENOENT)) {
                 ret = 0;
+                goto out;
         }
 
         if (ret) {
                 gf_log (this->name, GF_LOG_ERROR,
                         "error renaming %s -> %s (reason %s)",
                         ofile, nfile, strerror (errno));
+        }
+
+        if (!ret) {
+                ret = htime_update (this, priv, ts, nfile);
+                if (ret == -1) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "could not update htime file");
+                        goto out;
+                }
         }
 
         if (notify) {
@@ -198,8 +275,8 @@ changelog_rollover_changelog (xlator_t *this,
                                          CHANGELOG_PTHREAD_ERROR_HANDLE_0 (ret,
                                                                            out);
                                          gf_log (this->name, GF_LOG_INFO,
-                                                 "Changelog published and"
-                                                 " signalled bnotify");
+                                                 "Changelog published: %s and"
+                                                 " signalled bnotify", bname);
                                 }
                                 ret = pthread_mutex_unlock (
                                                        &priv->bn.bnotify_mutex);
@@ -209,6 +286,54 @@ changelog_rollover_changelog (xlator_t *this,
         }
 
  out:
+        return ret;
+}
+
+/* Returns 0 on successful creation of htime file
+ * returns -1 on failure or error
+ */
+int
+htime_open (xlator_t *this,
+            changelog_priv_t * priv, unsigned long ts)
+{
+        int fd                          = -1;
+        int ret                         = 0;
+        char ht_dir_path[PATH_MAX]      = {0,};
+        char ht_file_path[PATH_MAX]     = {0,};
+        int flags                       = 0;
+
+        CHANGELOG_FILL_HTIME_DIR(priv->changelog_dir, ht_dir_path);
+
+        /* get the htime file name in ht_file_path */
+        (void) snprintf (ht_file_path,PATH_MAX,"%s/%s.%lu",ht_dir_path,
+                        HTIME_FILE_NAME, ts);
+
+        flags |= (O_CREAT | O_RDWR | O_SYNC);
+        fd = open (ht_file_path, flags,
+                        S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+        if (fd < 0) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "unable to open/create htime file: %s"
+                        "(reason: %s)", ht_file_path, strerror (errno));
+                ret = -1;
+                goto out;
+
+        }
+
+        if (sys_fsetxattr (fd, HTIME_KEY, HTIME_INITIAL_VALUE,
+                       sizeof (HTIME_INITIAL_VALUE)-1,  0)) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "Htime xattr initialization failed");
+                ret = -1;
+                goto out;
+        }
+
+        /* save this htime_fd in priv->htime_fd */
+        priv->htime_fd = fd;
+        /* initialize rollover-number in priv to 1 */
+        priv->rollover_count = 1;
+
+out:
         return ret;
 }
 
@@ -311,7 +436,7 @@ changelog_handle_change (xlator_t *this,
         int ret = 0;
 
         if (CHANGELOG_TYPE_IS_ROLLOVER (cld->cld_type)) {
-                changelog_encode_change(priv);
+                changelog_encode_change (priv);
                 ret = changelog_start_next_change (this, priv,
                                                    cld->cld_roll_time,
                                                    cld->cld_finale);
@@ -515,6 +640,8 @@ changelog_rollover (void *data)
         slice = &priv->slice;
 
         while (1) {
+                (void) pthread_testcancel();
+
                 tv.tv_sec  = priv->rollover_time;
                 tv.tv_usec = 0;
                 FD_ZERO(&rset);
@@ -574,12 +701,38 @@ changelog_rollover (void *data)
                         changelog_drain_white_fops (this, priv);
                 }
 
+                /* Adding delay of 1 second only during explicit rollover:
+                 *
+                 * Changelog rollover can happen either due to actual
+                 * or the explict rollover during snapshot. Actual
+                 * rollover is controlled by tuneable called 'rollover-time'.
+                 * The minimum granularity for rollover-time is 1 second.
+                 * Explicit rollover is asynchronous in nature and happens
+                 * during snapshot.
+                 *
+                 * Basically, rollover renames the current CHANGELOG file
+                 * to CHANGELOG.TIMESTAMP. Let's assume, at time 't1',
+                 * actual and explicit rollover raced against  each
+                 * other and actual rollover won the race renaming the
+                 * CHANGELOG file to CHANGELOG.t1 and opens a new
+                 * CHANGELOG file. There is high chance that, an immediate
+                 * explicit rollover at time 't1' can happen with in the same
+                 * second to rename CHANGELOG file to CHANGELOG.t1 resulting in
+                 * purging the earlier CHANGELOG.t1 file created by actual
+                 * rollover. So adding a delay of 1 second guarantees unique
+                 * CHANGELOG.TIMESTAMP during  explicit rollover.
+                 */
+                if (priv->explicit_rollover == _gf_true)
+                        sleep (1);
+
                 ret = changelog_fill_rollover_data (&cld, _gf_false);
                 if (ret) {
                         gf_log (this->name, GF_LOG_ERROR,
                                 "failed to fill rollover data");
                         continue;
                 }
+
+                __mask_cancellation (this);
 
                 LOCK (&priv->lock);
                 {
@@ -588,6 +741,8 @@ changelog_rollover (void *data)
                                 SLICE_VERSION_UPDATE (slice);
                 }
                 UNLOCK (&priv->lock);
+
+                __unmask_cancellation (this);
         }
 
         return NULL;
@@ -606,6 +761,8 @@ changelog_fsync_thread (void *data)
         cld.cld_type = CHANGELOG_TYPE_FSYNC;
 
         while (1) {
+                (void) pthread_testcancel();
+
                 tv.tv_sec  = priv->fsync_interval;
                 tv.tv_usec = 0;
 
@@ -613,10 +770,14 @@ changelog_fsync_thread (void *data)
                 if (ret)
                         continue;
 
+                __mask_cancellation (this);
+
                 ret = changelog_inject_single_event (this, priv, &cld);
                 if (ret)
                         gf_log (this->name, GF_LOG_ERROR,
                                 "failed to inject fsync event");
+
+                __unmask_cancellation (this);
         }
 
         return NULL;

@@ -351,8 +351,13 @@ notify (xlator_t *this, int event, void *data, ...)
         case GF_EVENT_TRANSLATOR_OP:
         {
                 dict = data;
-                GF_OPTION_RECONF ("barrier", barrier_enabled, dict,
-                                  bool, out);
+                barrier_enabled = dict_get_str_boolean (dict, "barrier", -1);
+
+                if (barrier_enabled == -1) {
+                        gf_log (this->name, GF_LOG_ERROR, "Could not fetch "
+                                " barrier key from the dictionary.");
+                        goto out;
+                }
 
                 LOCK (&priv->lock);
                 {
@@ -388,7 +393,8 @@ unlock:
 
                 if (!list_empty (&queue))
                         barrier_dequeue_all (this, &queue);
-                // missing break is intentional
+
+                break;
         }
         default:
         {
@@ -648,7 +654,7 @@ struct volume_options options[] = {
         },
         { .key = {"barrier-timeout"},
           .type = GF_OPTION_TYPE_TIME,
-          .default_value = "120",
+          .default_value = BARRIER_TIMEOUT,
           .description = "After 'timeout' seconds since the time 'barrier' "
                          "option was set to \"on\", acknowledgements to file "
                          "operations are no longer blocked and previously "

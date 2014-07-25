@@ -544,7 +544,7 @@ posix_pstat (xlator_t *this, uuid_t gfid, const char *path,
 
         priv = this->private;
 
-        ret = lstat (path, &lstatbuf);
+        ret = sys_lstat (path, &lstatbuf);
 
         if (ret != 0) {
                 if (ret == -1) {
@@ -702,7 +702,7 @@ posix_gfid_set (xlator_t *this, const char *path, loc_t *loc, dict_t *xattr_req)
         }
 
         ret = sys_lsetxattr (path, GFID_XATTR_KEY, uuid_req, 16, XATTR_CREATE);
-        if (ret != 0) {
+        if (ret == -1) {
                 gf_log (this->name, GF_LOG_WARNING,
                         "setting GFID on %s failed (%s)", path,
                         strerror (errno));
@@ -893,8 +893,6 @@ void posix_dump_buffer (xlator_t *this, const char *real_path, const char *key,
 }
 #endif
 
-static int gf_xattr_enotsup_log;
-
 int
 posix_handle_pair (xlator_t *this, const char *real_path,
                    char *key, data_t *value, int flags)
@@ -916,14 +914,7 @@ posix_handle_pair (xlator_t *this, const char *real_path,
 #endif
                 if (sys_ret < 0) {
                         ret = -errno;
-                        if (errno == ENOTSUP) {
-                                GF_LOG_OCCASIONALLY(gf_xattr_enotsup_log,
-                                                    this->name,GF_LOG_WARNING,
-                                                    "Extended attributes not "
-                                                    "supported (try remounting "
-                                                    "brick with 'user_xattr' "
-                                                    "flag)");
-                        } else if (errno == ENOENT) {
+                        if (errno == ENOENT) {
                                 if (!posix_special_xattr (marker_xattrs,
                                                           key)) {
                                         gf_log (this->name, GF_LOG_ERROR,
@@ -971,14 +962,7 @@ posix_fhandle_pair (xlator_t *this, int fd,
 
         if (sys_ret < 0) {
                 ret = -errno;
-                if (errno == ENOTSUP) {
-                        GF_LOG_OCCASIONALLY(gf_xattr_enotsup_log,
-                                            this->name,GF_LOG_WARNING,
-                                            "Extended attributes not "
-                                            "supported (try remounting "
-                                            "brick with 'user_xattr' "
-                                            "flag)");
-                } else if (errno == ENOENT) {
+                if (errno == ENOENT) {
                         gf_log (this->name, GF_LOG_ERROR,
                                 "fsetxattr on fd=%d failed: %s", fd,
                                 strerror (errno));
@@ -1004,6 +988,67 @@ out:
         return ret;
 }
 
+static void
+del_stale_dir_handle (xlator_t *this, uuid_t gfid)
+{
+        char    newpath[PATH_MAX] = {0, };
+        uuid_t       gfid_curr = {0, };
+        ssize_t      size = -1;
+        gf_boolean_t stale = _gf_false;
+        char         *hpath = NULL;
+        struct stat  stbuf = {0, };
+        struct iatt  iabuf = {0, };
+
+        MAKE_HANDLE_GFID_PATH (hpath, this, gfid, NULL);
+
+        /* check that it is valid directory handle */
+        size = sys_lstat (hpath, &stbuf);
+        if (size < 0) {
+                gf_log (this->name, GF_LOG_DEBUG, "%s: Handle stat failed: "
+                        "%s", hpath, strerror (errno));
+                goto out;
+        }
+
+        iatt_from_stat (&iabuf, &stbuf);
+        if (iabuf.ia_nlink != 1 || !IA_ISLNK (iabuf.ia_type)) {
+                gf_log (this->name, GF_LOG_DEBUG, "%s: Handle nlink %d %d",
+                        hpath, iabuf.ia_nlink, IA_ISLNK (iabuf.ia_type));
+                goto out;
+        }
+
+        size = posix_handle_path (this, gfid, NULL, newpath, sizeof (newpath));
+        if (size <= 0 && errno == ENOENT) {
+                gf_log (this->name, GF_LOG_DEBUG, "%s: %s", newpath,
+                        strerror (ENOENT));
+                stale = _gf_true;
+                goto out;
+        }
+
+        size = sys_lgetxattr (newpath, GFID_XATTR_KEY, gfid_curr, 16);
+        if (size < 0 && errno == ENOENT) {
+                gf_log (this->name, GF_LOG_DEBUG, "%s: %s", newpath,
+                        strerror (ENOENT));
+                stale = _gf_true;
+        } else if (size == 16 && uuid_compare (gfid, gfid_curr)) {
+                gf_log (this->name, GF_LOG_DEBUG, "%s: mismatching gfid: %s, "
+                        "at %s", hpath, uuid_utoa (gfid_curr), newpath);
+                stale = _gf_true;
+        }
+
+out:
+        if (stale) {
+                size = sys_unlink (hpath);
+                if (size < 0 && errno != ENOENT)
+                        gf_log (this->name, GF_LOG_ERROR, "%s: Failed to "
+                                "remove handle to %s (%s)", hpath, newpath,
+                                strerror (errno));
+        } else if (size == 16) {
+                gf_log (this->name, GF_LOG_DEBUG, "%s: Fresh handle for "
+                        "%s with gfid %s", hpath, newpath,
+                        uuid_utoa (gfid_curr));
+        }
+        return;
+}
 
 static int
 janitor_walker (const char *fpath, const struct stat *sb,
@@ -1034,7 +1079,7 @@ janitor_walker (const char *fpath, const struct stat *sb,
                                 "removing directory %s", fpath);
 
                         rmdir (fpath);
-                        posix_handle_unset (this, stbuf.ia_gfid, NULL);
+                        del_stale_dir_handle (this, stbuf.ia_gfid);
                 }
                 break;
         }
@@ -1239,6 +1284,11 @@ posix_acl_xattr_set (xlator_t *this, const char *path, dict_t *xattr_req)
         if (data) {
                 ret = sys_lsetxattr (path, POSIX_ACL_ACCESS_XATTR,
                                      data->data, data->len, 0);
+#ifdef __FreeBSD__
+                if (ret != -1) {
+                        ret = 0;
+                }
+#endif /* __FreeBSD__ */
                 if (ret != 0)
                         goto out;
         }
@@ -1247,6 +1297,11 @@ posix_acl_xattr_set (xlator_t *this, const char *path, dict_t *xattr_req)
         if (data) {
                 ret = sys_lsetxattr (path, POSIX_ACL_DEFAULT_XATTR,
                                      data->data, data->len, 0);
+#ifdef __FreeBSD__
+                if (ret != -1) {
+                        ret = 0;
+                }
+#endif /* __FreeBSD__ */
                 if (ret != 0)
                         goto out;
         }

@@ -23,7 +23,8 @@
         GF_CLUSTER_TYPE_NONE = 0,
         GF_CLUSTER_TYPE_STRIPE,
         GF_CLUSTER_TYPE_REPLICATE,
-        GF_CLUSTER_TYPE_STRIPE_REPLICATE
+        GF_CLUSTER_TYPE_STRIPE_REPLICATE,
+        GF_CLUSTER_TYPE_DISPERSE
 };
 
  enum gf1_cli_replace_op {
@@ -86,7 +87,9 @@ enum gf1_cli_gsync_set {
         GF_GSYNC_OPTION_TYPE_STATUS,
         GF_GSYNC_OPTION_TYPE_ROTATE,
         GF_GSYNC_OPTION_TYPE_CREATE,
-        GF_GSYNC_OPTION_TYPE_DELETE
+        GF_GSYNC_OPTION_TYPE_DELETE,
+        GF_GSYNC_OPTION_TYPE_PAUSE,
+        GF_GSYNC_OPTION_TYPE_RESUME
 };
 
 enum gf1_cli_stats_op {
@@ -133,7 +136,8 @@ enum gf_cli_status_type {
         GF_CLI_STATUS_BRICK        = 0x0400,    /*00010000000000*/
         GF_CLI_STATUS_NFS          = 0x0800,    /*00100000000000*/
         GF_CLI_STATUS_SHD          = 0x1000,    /*01000000000000*/
-        GF_CLI_STATUS_QUOTAD       = 0x2000     /*10000000000000*/
+        GF_CLI_STATUS_QUOTAD       = 0x2000,     /*10000000000000*/
+        GF_CLI_STATUS_SNAPD        = 0x4000     /*100000000000000*/
 };
 
 /* Identifiers for snapshot clis */
@@ -166,6 +170,12 @@ enum  gf1_cli_snapshot_status {
         GF_SNAP_STATUS_TYPE_ALL = 0,
         GF_SNAP_STATUS_TYPE_SNAP,
         GF_SNAP_STATUS_TYPE_VOL
+};
+
+enum gf1_cli_snapshot_delete {
+        GF_SNAP_DELETE_TYPE_ALL  = 0,
+        GF_SNAP_DELETE_TYPE_SNAP = 1,
+        GF_SNAP_DELETE_TYPE_VOL  = 2
 };
 
 struct gf_cli_req {

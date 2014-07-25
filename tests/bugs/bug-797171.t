@@ -1,6 +1,7 @@
 #!/bin/bash
 
 . $(dirname $0)/../include.rc
+. $(dirname $0)/../volume.rc
 
 cleanup;
 
@@ -14,11 +15,8 @@ TEST $CLI volume set $V0 debug.log-history on
 
 TEST $CLI volume start $V0;
 
-sleep 1;
 TEST glusterfs --entry-timeout=0 --attribute-timeout=0 -s $H0 --volfile-id $V0 \
 $M0;
-
-sleep 5;
 
 touch $M0/{1..22};
 rm -f $M0/*;
@@ -35,7 +33,7 @@ TEST $CLI volume statedump $V0 history;
 file_name=$(ls $statedumpdir/statedump_tmp);
 TEST grep "xlator.debug.trace.history" $statedumpdir/statedump_tmp/$file_name;
 
-TEST umount $M0
+EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0
 
 rm -rf $statedumpdir/statedump_tmp;
 rm -f $statedumpdir/glusterdump.options;

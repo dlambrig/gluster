@@ -23,16 +23,13 @@
 #include <stdlib.h>
 #include <syslog.h>
 
-#ifdef HAVE_LIBINTL_H
-#include <libintl.h>
-#endif
-
 #ifdef HAVE_BACKTRACE
 #include <execinfo.h>
+#else
+#include "execinfo_compat.h"
 #endif
 
 #include <sys/stat.h>
-#include "gf-error-codes.h"
 
 #define GF_JSON_MSG_LENGTH      8192
 #define GF_SYSLOG_CEE_FORMAT    \
@@ -47,6 +44,11 @@
 #include "defaults.h"
 #include "glusterfs.h"
 #include "timer.h"
+
+/* Do not replace gf_log in TEST_LOG with gf_msg, as there is a slight chance
+ * that it could lead to an infinite recursion.*/
+#define TEST_LOG(__msg, __args ...)                             \
+                gf_log ("logging-infra", GF_LOG_DEBUG, __msg, ##__args);
 
 void
 gf_log_flush_timeout_cbk (void *data);
@@ -472,18 +474,6 @@ gf_log_fini (void *data)
         return ret;
 }
 
-/**
- * gf_get_error_message -function to get error message for given error code
- * @error_code: error code defined by log book
- *
- * @return: success: string
- *          failure: NULL
- */
-const char *
-gf_get_error_message (int error_code) {
-        return _gf_get_message (error_code);
-}
-
 
 /**
  * gf_openlog -function to open syslog specific to gluster based on
@@ -511,10 +501,7 @@ gf_openlog (const char *ident, int option, int facility)
 
         /* TODO: Should check for errors here and return appropriately */
         setlocale(LC_ALL, "");
-#ifdef HAVE_LIBINTL_H
-        bindtextdomain("gluster", "/usr/share/locale");
-        textdomain("gluster");
-#endif
+        setlocale(LC_NUMERIC, "C"); /* C-locale for strtod, ... */
         /* close the previous syslog if open as we are changing settings */
         closelog ();
         openlog(ident, _option, _facility);
@@ -628,50 +615,28 @@ _json_escape(const char *str, char *buf, size_t len)
 
 /**
  * gf_syslog -function to submit message to syslog specific to gluster
- * @error_code:        error code defined by log book
  * @facility_priority: facility_priority of syslog()
  * @format:            optional format string to syslog()
  *
  * @return: void
  */
 void
-gf_syslog (int error_code, int facility_priority, char *format, ...)
+gf_syslog (int facility_priority, char *format, ...)
 {
         char       *msg = NULL;
         char        json_msg[GF_JSON_MSG_LENGTH];
         GF_UNUSED char       *p = NULL;
-        const char *error_message = NULL;
-        char        json_error_message[GF_JSON_MSG_LENGTH];
         va_list     ap;
 
-        error_message = gf_get_error_message (error_code);
+        GF_ASSERT (format);
 
         va_start (ap, format);
-        if (format) {
-                vasprintf (&msg, format, ap);
+        if (vasprintf (&msg, format, ap) != -1) {
                 p = _json_escape (msg, json_msg, GF_JSON_MSG_LENGTH);
-                if (error_message) {
-                        p = _json_escape (error_message, json_error_message,
-                                          GF_JSON_MSG_LENGTH);
-                        syslog (facility_priority, GF_SYSLOG_CEE_FORMAT,
-                                json_msg, error_code, json_error_message);
-                } else {
-                        /* ignore the error code because no error message for it
-                           and use normal syslog */
-                        syslog (facility_priority, "%s", msg);
-                }
+                syslog (facility_priority, "%s", msg);
                 free (msg);
-        } else {
-                if (error_message) {
-                        /* no user message: treat error_message as msg */
-                        syslog (facility_priority, GF_SYSLOG_CEE_FORMAT,
-                                json_error_message, error_code,
-                                json_error_message);
-                } else {
-                        /* cannot produce log as neither error_message nor
-                           msg available */
-                }
-        }
+        } else
+                syslog (GF_LOG_CRITICAL, "vasprintf() failed, out of memory?");
         va_end (ap);
 }
 
@@ -852,8 +817,6 @@ _gf_log_callingfn (const char *domain, const char *file, const char *function,
         else
                 basename = file;
 
-#if HAVE_BACKTRACE
-        /* Print 'calling function' */
         do {
                 void *array[5];
                 char **callingfn = NULL;
@@ -876,7 +839,6 @@ _gf_log_callingfn (const char *domain, const char *file, const char *function,
 
                 free (callingfn);
         } while (0);
-#endif /* HAVE_BACKTRACE */
 
         if (ctx->log.log_control_file_found)
         {
@@ -893,8 +855,7 @@ _gf_log_callingfn (const char *domain, const char *file, const char *function,
                 vasprintf (&str2, fmt, ap);
                 va_end (ap);
 
-                gf_syslog (GF_ERR_DEV, priority,
-                           "[%s:%d:%s] %s %d-%s: %s",
+                gf_syslog (priority, "[%s:%d:%s] %s %d-%s: %s",
                            basename, line, function,
                            callstr,
                            ((this->graph) ? this->graph->id:0), domain,
@@ -936,8 +897,10 @@ _gf_log_callingfn (const char *domain, const char *file, const char *function,
         {
                 if (ctx->log.logfile) {
                         fprintf (ctx->log.logfile, "%s\n", msg);
+                        fflush (ctx->log.logfile);
                 } else if (ctx->log.loglevel >= level) {
                         fprintf (stderr, "%s\n", msg);
+                        fflush (stderr);
                 }
 
 #ifdef GF_LINUX_HOST_OS
@@ -1107,7 +1070,6 @@ out:
         return ret;
 }
 
-#if HAVE_BACKTRACE
 void
 _gf_msg_backtrace_nomem (gf_loglevel_t level, int stacksize)
 {
@@ -1142,7 +1104,8 @@ _gf_msg_backtrace_nomem (gf_loglevel_t level, int stacksize)
                         fileno (stderr);
                 if (bt_size && (fd != -1)) {
                         /* print to the file fd, to prevent any
-                        * allocations from backtrace_symbols */
+                           allocations from backtrace_symbols
+                         */
                         backtrace_symbols_fd (&array[0], bt_size, fd);
                 }
         }
@@ -1190,7 +1153,6 @@ out:
         FREE (callingfn);
         return ret;
 }
-#endif /* HAVE_BACKTRACE */
 
 int
 _gf_msg_nomem (const char *domain, const char *file,
@@ -1298,9 +1260,7 @@ _gf_msg_nomem (const char *domain, const char *file,
                 }
                 pthread_mutex_unlock (&ctx->log.logfile_mutex);
 
-#ifdef HAVE_BACKTRACE
                 _gf_msg_backtrace_nomem (level, GF_LOG_BACKTRACE_DEPTH);
-#endif
 
                 break;
         }
@@ -1371,8 +1331,7 @@ gf_log_syslog (glusterfs_ctx_t *ctx, const char *domain, const char *file,
                 break;
                 case gf_logformat_cee:
                 /* TODO: Enhance CEE with additional parameters */
-                gf_syslog (GF_ERR_DEV, priority,
-                           "[%s:%d:%s] %d-%s: %s",
+                gf_syslog (priority, "[%s:%d:%s] %d-%s: %s",
                            file, line, function, graph_id, domain, *appmsgstr);
                 break;
 
@@ -1796,8 +1755,11 @@ unlock:
         if (list_empty (&copy))
                 return;
 
+        TEST_LOG("Log buffer size reduced. About to flush %d extra log "
+                 "messages", count);
         // ... and then flush them outside the lock.
         gf_log_flush_list (&copy, ctx);
+        TEST_LOG("Just flushed %d extra log messages", count);
 
         return;
 }
@@ -1816,6 +1778,8 @@ __gf_log_inject_timer_event (glusterfs_ctx_t *ctx)
         timeout.tv_sec  = ctx->log.timeout;
         timeout.tv_nsec = 0;
 
+        TEST_LOG("Starting timer now. Timeout = %u, current buf size = %d",
+                 ctx->log.timeout, ctx->log.lru_size);
         ctx->log.log_flush_timer = gf_timer_call_after (ctx, timeout,
                                                       gf_log_flush_timeout_cbk,
                                                         (void *)ctx);
@@ -1849,6 +1813,8 @@ gf_log_flush_timeout_cbk (void *data)
 
         ctx = (glusterfs_ctx_t *) data;
 
+        TEST_LOG("Log timer timed out. About to flush outstanding messages if "
+                 "present");
         gf_log_flush_msgs (ctx);
 
         (void) gf_log_inject_timer_event (ctx);
@@ -1966,6 +1932,10 @@ _gf_msg_internal (const char *domain, const char *file, const char *function,
                 /* If the list is full, flush the lru msg to disk and also
                  * release it after unlock, and ...
                  * */
+                if (first->refcount >= 1)
+                        TEST_LOG("Buffer overflow of a buffer whose size limit "
+                                 "is %d. About to flush least recently used log"
+                                 " message to disk", size);
                         list_del_init (&first->msg_list);
                         ctx->log.lru_cur_size--;
                         flush_lru = _gf_true;
@@ -2033,6 +2003,7 @@ _gf_msg (const char *domain, const char *file, const char *function,
         glusterfs_ctx_t *ctx = NULL;
         char             callstr[GF_LOG_BACKTRACE_SIZE] = {0,};
         int              passcallstr = 0;
+        int              log_inited = 0;
 
         /* in args check */
         if (!domain || !file || !function || !fmt) {
@@ -2061,7 +2032,6 @@ _gf_msg (const char *domain, const char *file, const char *function,
         if (level > ctx->log.loglevel)
                 goto out;
 
-#if HAVE_BACKTRACE
         if (trace) {
                 ret = _gf_msg_backtrace (GF_LOG_BACKTRACE_DEPTH, callstr,
                                          GF_LOG_BACKTRACE_DEPTH);
@@ -2070,7 +2040,14 @@ _gf_msg (const char *domain, const char *file, const char *function,
                 else
                         ret = 0;
         }
-#endif /* HAVE_BACKTRACE */
+
+        pthread_mutex_lock (&ctx->log.logfile_mutex);
+        {
+                if (ctx->log.logfile) {
+                        log_inited = 1;
+                }
+        }
+        pthread_mutex_unlock (&ctx->log.logfile_mutex);
 
         /* form the message */
         va_start (ap, fmt);
@@ -2078,15 +2055,24 @@ _gf_msg (const char *domain, const char *file, const char *function,
         va_end (ap);
 
         /* log */
-        if (ret != -1)
-                ret = _gf_msg_internal (domain, file, function, line, level,
-                                       errnum, msgid, &msgstr,
-                                       (passcallstr? callstr : NULL),
-                                       (this->graph)? this->graph->id : 0);
-        else
+        if (ret != -1) {
+                if (!log_inited && ctx->log.gf_log_syslog) {
+                        ret = gf_log_syslog (ctx, domain, file, function, line,
+                                            level, errnum, msgid, &msgstr,
+                                            (passcallstr? callstr : NULL),
+                                            (this->graph)? this->graph->id : 0,
+                                            gf_logformat_traditional);
+                } else {
+                        ret = _gf_msg_internal (domain, file, function, line,
+                                            level, errnum, msgid, &msgstr,
+                                            (passcallstr? callstr : NULL),
+                                            (this->graph)? this->graph->id : 0);
+                }
+        } else {
                 /* man (3) vasprintf states on error strp contents
                  * are undefined, be safe */
                 msgstr = NULL;
+        }
 
         FREE (msgstr);
 
@@ -2164,8 +2150,7 @@ _gf_log (const char *domain, const char *file, const char *function, int line,
                 vasprintf (&str2, fmt, ap);
                 va_end (ap);
 
-                gf_syslog (GF_ERR_DEV, priority,
-                           "[%s:%d:%s] %d-%s: %s",
+                gf_syslog (priority, "[%s:%d:%s] %d-%s: %s",
                            basename, line, function,
                            ((this->graph) ? this->graph->id:0), domain, str2);
                 goto err;

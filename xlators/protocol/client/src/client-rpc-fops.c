@@ -1079,6 +1079,7 @@ out:
         if (rsp.op_ret == -1) {
                 gf_log (this->name, (((op_errno == ENOTSUP) ||
                                       (op_errno == ENODATA) ||
+                                      (op_errno == ESTALE) ||
                                       (op_errno == ENOENT)) ?
                                      GF_LOG_DEBUG : GF_LOG_WARNING),
                         "remote operation failed: %s. Path: %s (%s). Key: %s",
@@ -1148,10 +1149,13 @@ client3_3_fgetxattr_cbk (struct rpc_req *req, struct iovec *iov, int count,
 
 out:
         if (rsp.op_ret == -1) {
-                gf_log (this->name, ((op_errno == ENOTSUP) ?
-                                     GF_LOG_DEBUG : GF_LOG_WARNING),
-                        "remote operation failed: %s",
-                        strerror (op_errno));
+                gf_log (this->name, (((op_errno == ENOTSUP) ||
+                                      (op_errno == ERANGE)  ||
+                                      (op_errno == ENODATA) ||
+                                      (op_errno == ENOENT)) ?
+                                      GF_LOG_DEBUG : GF_LOG_WARNING),
+                                      "remote operation failed: %s",
+                                      strerror (op_errno));
         }
 
         CLIENT_STACK_UNWIND (fgetxattr, frame, rsp.op_ret, op_errno, dict, xdata);
@@ -2736,8 +2740,12 @@ client3_3_lookup_cbk (struct rpc_req *req, struct iovec *iov, int count,
             && (uuid_compare (stbuf.ia_gfid, inode->gfid) != 0)) {
                 gf_log (frame->this->name, GF_LOG_DEBUG,
                         "gfid changed for %s", local->loc.path);
+
                 rsp.op_ret = -1;
                 op_errno = ESTALE;
+                if (xdata)
+                        ret = dict_set_int32 (xdata, "gfid-changed", 1);
+
                 goto out;
         }
 

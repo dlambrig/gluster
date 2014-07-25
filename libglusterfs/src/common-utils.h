@@ -50,6 +50,8 @@ void trap (void);
 #define roof(a,b) ((((a)+(b)-1)/((b)?(b):1))*(b))
 #define floor(a,b) (((a)/((b)?(b):1))*(b))
 
+#define IPv4_ADDR_SIZE 32
+
 
 #define GF_UNIT_KB    1024ULL
 #define GF_UNIT_MB    1048576ULL
@@ -88,6 +90,9 @@ void trap (void);
 #define GF_DAY_IN_SECONDS (24*60*60)
 #define GF_WEEK_IN_SECONDS (7*24*60*60)
 
+/* Default timeout for both barrier and changelog translator */
+#define BARRIER_TIMEOUT "120"
+
 enum _gf_boolean
 {
 	_gf_false = 0,
@@ -103,11 +108,13 @@ enum _gf_boolean
  */
 enum _gf_client_pid
 {
-        GF_CLIENT_PID_MAX    =  0,
-        GF_CLIENT_PID_GSYNCD = -1,
-        GF_CLIENT_PID_HADOOP = -2,
-        GF_CLIENT_PID_DEFRAG = -3,
-        GF_CLIENT_PID_NO_ROOT_SQUASH = -4,
+        GF_CLIENT_PID_MAX               =  0,
+        GF_CLIENT_PID_GSYNCD            = -1,
+        GF_CLIENT_PID_HADOOP            = -2,
+        GF_CLIENT_PID_DEFRAG            = -3,
+        GF_CLIENT_PID_NO_ROOT_SQUASH    = -4,
+        GF_CLIENT_PID_QUOTA_MOUNT       = -5,
+        GF_CLIENT_PID_AFR_SELF_HEALD    = -6,
 };
 
 typedef enum _gf_boolean gf_boolean_t;
@@ -578,6 +585,7 @@ void skip_word (char **str);
 /* returns a new string with nth word of given string. n>=1 */
 char *get_nth_word (const char *str, int n);
 
+gf_boolean_t mask_match (const uint32_t a, const uint32_t b, const uint32_t m);
 char valid_host_name (char *address, int length);
 char valid_ipv4_address (char *address, int length, gf_boolean_t wildcard_acc);
 char valid_ipv6_address (char *address, int length, gf_boolean_t wildcard_acc);
@@ -614,12 +622,7 @@ gf_boolean_t gf_is_same_address (char *host1, char *host2);
 void md5_wrapper(const unsigned char *data, size_t len, char *md5);
 
 int gf_thread_create (pthread_t *thread, const pthread_attr_t *attr,
-		      void *(*start_routine)(void *), void *arg);
-#ifdef __NetBSD__
-size_t backtrace(void **, size_t);
-char **backtrace_symbols(void *const *, size_t);
-#endif
-
+                      void *(*start_routine)(void *), void *arg);
 gf_boolean_t
 gf_is_service_running (char *pidfile, int *pid);
 int
@@ -637,4 +640,7 @@ gf_check_log_format (const char *value);
 int
 gf_check_logger (const char *value);
 
+gf_boolean_t
+gf_compare_sockaddr (const struct sockaddr *addr1,
+                     const struct sockaddr *addr2);
 #endif /* _COMMON_UTILS_H */

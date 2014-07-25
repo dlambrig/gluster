@@ -110,30 +110,6 @@ out:
 }
 
 
-void
-saved_frames_delete (struct saved_frame *saved_frame,
-                     rpc_clnt_connection_t *conn)
-{
-        GF_VALIDATE_OR_GOTO ("rpc-clnt", saved_frame, out);
-        GF_VALIDATE_OR_GOTO ("rpc-clnt", conn, out);
-
-        pthread_mutex_lock (&conn->lock);
-        {
-                list_del_init (&saved_frame->list);
-                conn->saved_frames->count--;
-        }
-        pthread_mutex_unlock (&conn->lock);
-
-        if (saved_frame->rpcreq != NULL) {
-                rpc_clnt_reply_deinit (saved_frame->rpcreq,
-                                       conn->rpc_clnt->reqpool);
-        }
-
-        mem_put (saved_frame);
-out:
-        return;
-}
-
 
 static void
 call_bail (void *data)
@@ -452,10 +428,6 @@ rpc_clnt_reconnect (void *conn_ptr)
                 }
         }
         pthread_mutex_unlock (&conn->lock);
-
-        if ((ret == -1) && (errno != EINPROGRESS) && (clnt->notifyfn)) {
-                clnt->notifyfn (clnt, clnt->mydata, RPC_CLNT_DISCONNECT, NULL);
-        }
 
         return;
 }
@@ -1008,9 +980,11 @@ rpc_clnt_connection_init (struct rpc_clnt *clnt, glusterfs_ctx_t *ctx,
                 gf_log (name, GF_LOG_DEBUG,
                         "setting ping-timeout to %d", conn->ping_timeout);
         } else {
-                gf_log (name, GF_LOG_INFO,
-                        "defaulting ping-timeout to 30secs");
-                conn->ping_timeout = 30;
+                /*TODO: Once the epoll thread model is fixed,
+                  change the default ping-timeout to 30sec */
+                gf_log (name, GF_LOG_DEBUG,
+                        "disable ping-timeout");
+                conn->ping_timeout = 0;
         }
 
         trans = rpc_transport_load (ctx, options, name);
@@ -1605,7 +1579,7 @@ rpc_clnt_submit (struct rpc_clnt *rpc, rpc_clnt_prog_t *prog,
                 goto out;
         }
 
-        rpc_clnt_start_ping (rpc);
+        rpc_clnt_check_and_start_ping (rpc);
         ret = 0;
 
 out:

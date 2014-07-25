@@ -217,7 +217,7 @@ changelog_unlink (call_frame_t *frame, xlator_t *this,
 
         priv = this->private;
         CHANGELOG_NOT_ACTIVE_THEN_GOTO (frame, priv, wind);
-        CHANGELOG_IF_INTERNAL_FOP_THEN_GOTO (xdata, wind);
+        CHANGELOG_IF_INTERNAL_FOP_THEN_GOTO (frame, xdata, wind);
 
         CHANGELOG_INIT_NOCHECK (this, frame->local, NULL, loc->inode->gfid, 2);
 
@@ -428,7 +428,7 @@ changelog_link (call_frame_t *frame,
         priv = this->private;
 
         CHANGELOG_NOT_ACTIVE_THEN_GOTO (frame, priv, wind);
-        CHANGELOG_IF_INTERNAL_FOP_THEN_GOTO (xdata, wind);
+        CHANGELOG_IF_INTERNAL_FOP_THEN_GOTO (frame, xdata, wind);
 
         CHANGELOG_INIT_NOCHECK (this, frame->local, NULL, oldloc->gfid, 2);
 
@@ -642,6 +642,7 @@ changelog_mknod (call_frame_t *frame,
 
         priv = this->private;
         CHANGELOG_NOT_ACTIVE_THEN_GOTO (frame, priv, wind);
+        CHANGELOG_IF_INTERNAL_FOP_THEN_GOTO (frame, xdata, wind);
 
         ret = dict_get_ptr (xdata, "gfid-req", &uuid_req);
         if (ret) {
@@ -1281,6 +1282,16 @@ changelog_assign_encoding (changelog_priv_t *priv, char *enc)
         }
 }
 
+static void
+changelog_assign_barrier_timeout(changelog_priv_t *priv, uint32_t timeout)
+{
+       LOCK (&priv->lock);
+       {
+               priv->timeout.tv_sec = timeout;
+       }
+       UNLOCK (&priv->lock);
+}
+
 /* cleanup any helper threads that are running */
 static void
 changelog_cleanup_helper_threads (xlator_t *this, changelog_priv_t *priv)
@@ -1444,9 +1455,7 @@ notify (xlator_t *this, int event, void *data, ...)
         if (event == GF_EVENT_TRANSLATOR_OP) {
 
                 dict = data;
-                /*TODO: Also barrier option is persistent. Need to
-                 *      decide on the brick crash scenarios.
-                 */
+
                 barrier = dict_get_str_boolean (dict, "barrier", DICT_DEFAULT);
 
                 switch (barrier) {
@@ -1490,7 +1499,7 @@ notify (xlator_t *this, int event, void *data, ...)
                          */
                         if (ret == 0) {
                                 chlog_barrier_dequeue_all(this, &queue);
-                                gf_log(this->name, GF_LOG_DEBUG,
+                                gf_log(this->name, GF_LOG_INFO,
                                        "Disabled changelog barrier");
                         } else {
                                 gf_log (this->name, GF_LOG_ERROR,
@@ -1540,10 +1549,15 @@ notify (xlator_t *this, int event, void *data, ...)
                         /* Start changelog barrier */
                         LOCK (&priv->lock);
                         {
-                                priv->barrier_enabled = _gf_true;
+                                ret = __chlog_barrier_enable (this, priv);
                         }
                         UNLOCK (&priv->lock);
-                        gf_log(this->name, GF_LOG_DEBUG,
+                        if (ret == -1) {
+                                changelog_barrier_cleanup (this, priv, &queue);
+                                goto out;
+                        }
+
+                        gf_log(this->name, GF_LOG_INFO,
                                            "Enabled changelog barrier");
 
                         ret = changelog_barrier_notify(priv, buf);
@@ -1661,6 +1675,11 @@ changelog_init (xlator_t *this, changelog_priv_t *priv)
          * simple here.
          */
         ret = changelog_fill_rollover_data (&cld, _gf_false);
+        if(ret)
+                goto out;
+
+        ret = htime_open (this, priv, cld.cld_roll_time);
+        /* call htime open with cld's rollover_time */
         if (ret)
                 goto out;
 
@@ -1779,6 +1798,9 @@ reconfigure (xlator_t *this, dict_t *options)
         gf_boolean_t            active_now     = _gf_true;
         changelog_time_slice_t *slice          = NULL;
         changelog_log_data_t    cld            = {0,};
+        char    htime_dir[PATH_MAX]            = {0,};
+        struct timeval          tv             = {0,};
+        uint32_t                timeout        = 0;
 
         priv = this->private;
         if (!priv)
@@ -1803,6 +1825,12 @@ reconfigure (xlator_t *this, dict_t *options)
                 goto out;
 
         ret = mkdir_p (priv->changelog_dir, 0600, _gf_true);
+
+        if (ret)
+                goto out;
+        CHANGELOG_FILL_HTIME_DIR(priv->changelog_dir, htime_dir);
+        ret = mkdir_p (htime_dir, 0600, _gf_true);
+
         if (ret)
                 goto out;
 
@@ -1827,6 +1855,9 @@ reconfigure (xlator_t *this, dict_t *options)
                           priv->rollover_time, options, int32, out);
         GF_OPTION_RECONF ("fsync-interval",
                           priv->fsync_interval, options, int32, out);
+        GF_OPTION_RECONF ("changelog-barrier-timeout",
+                          timeout, options, time, out);
+        changelog_assign_barrier_timeout (priv, timeout);
 
         if (active_now || active_earlier) {
                 ret = changelog_fill_rollover_data (&cld, !active_now);
@@ -1847,6 +1878,15 @@ reconfigure (xlator_t *this, dict_t *options)
                         goto out;
 
                 if (active_now) {
+                        if (!active_earlier) {
+                                if (gettimeofday(&tv, NULL) ) {
+                                        gf_log (this->name, GF_LOG_ERROR,
+                                                 "unable to fetch htime");
+                                        ret = -1;
+                                        goto out;
+                                }
+                                htime_open(this, priv, tv.tv_sec);
+                        }
                         ret = changelog_spawn_notifier (this, priv);
                         if (!ret)
                                 ret = changelog_spawn_helper_threads (this,
@@ -1871,10 +1911,12 @@ reconfigure (xlator_t *this, dict_t *options)
 int32_t
 init (xlator_t *this)
 {
-        int                     ret             = -1;
-        char                    *tmp            = NULL;
-        changelog_priv_t        *priv           = NULL;
-        gf_boolean_t            cond_lock_init  = _gf_false;
+        int                     ret                     = -1;
+        char                    *tmp                    = NULL;
+        changelog_priv_t        *priv                   = NULL;
+        gf_boolean_t            cond_lock_init          = _gf_false;
+        char                    htime_dir[PATH_MAX]     = {0,};
+        uint32_t                timeout                 = 0;
 
         GF_VALIDATE_OR_GOTO ("changelog", this, out);
 
@@ -1932,6 +1974,12 @@ init (xlator_t *this)
          * so that consumers can _look_ into it (finding nothing...)
          */
         ret = mkdir_p (priv->changelog_dir, 0600, _gf_true);
+
+        if (ret)
+                goto out;
+
+        CHANGELOG_FILL_HTIME_DIR(priv->changelog_dir, htime_dir);
+        ret = mkdir_p (htime_dir, 0600, _gf_true);
         if (ret)
                 goto out;
 
@@ -1948,6 +1996,8 @@ init (xlator_t *this)
         GF_OPTION_INIT ("rollover-time", priv->rollover_time, int32, out);
 
         GF_OPTION_INIT ("fsync-interval", priv->fsync_interval, int32, out);
+        GF_OPTION_INIT ("changelog-barrier-timeout", timeout, time, out);
+        priv->timeout.tv_sec = timeout;
 
         changelog_encode_change(priv);
 
@@ -1990,20 +2040,21 @@ init (xlator_t *this)
 
  out:
         if (ret) {
-                if (this->local_pool)
+                if (this && this->local_pool)
                         mem_pool_destroy (this->local_pool);
-                if (priv->cb) {
-                        ret = priv->cb->dtor (this, &priv->cd);
-                        if (ret)
-                                gf_log (this->name, GF_LOG_ERROR,
+                if (priv) {
+                        if (priv->cb) {
+                                ret = priv->cb->dtor (this, &priv->cd);
+                                if (ret)
+                                        gf_log (this->name, GF_LOG_ERROR,
                                         "error in cleanup during init()");
+                        }
+                        GF_FREE (priv->changelog_brick);
+                        GF_FREE (priv->changelog_dir);
+                        if (cond_lock_init)
+                                changelog_pthread_destroy (priv);
+                        GF_FREE (priv);
                 }
-                GF_FREE (priv->changelog_brick);
-                GF_FREE (priv->changelog_dir);
-                if (cond_lock_init)
-                        changelog_pthread_destroy (priv);
-
-                GF_FREE (priv);
                 this->private = NULL;
         } else
                 this->private = priv;
@@ -2097,6 +2148,14 @@ struct volume_options options[] = {
          .default_value = "5",
          .description = "do not open CHANGELOG file with O_SYNC mode."
                         " instead perform fsync() at specified intervals"
+        },
+        { .key = {"changelog-barrier-timeout"},
+          .type = GF_OPTION_TYPE_TIME,
+          .default_value = BARRIER_TIMEOUT,
+          .description = "After 'timeout' seconds since the time 'barrier' "
+                         "option was set to \"on\", unlink/rmdir/rename  "
+                         "operations are no longer blocked and previously "
+                         "blocked fops are allowed to go through"
         },
         {.key = {NULL}
         },

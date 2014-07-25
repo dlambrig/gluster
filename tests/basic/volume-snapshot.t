@@ -76,7 +76,7 @@ TEST setup_lvm 3
 
 TEST $CLI_1 peer probe $H2;
 TEST $CLI_1 peer probe $H3;
-EXPECT_WITHIN 20 2 peer_count;
+EXPECT_WITHIN $PROBE_TIMEOUT 2 peer_count;
 
 create_volumes
 EXPECT 'Created' volinfo_field $V0 'Status';
@@ -108,11 +108,9 @@ TEST $CLI_1 snapshot config $V0 snap-max-hard-limit 100
 TEST $CLI_1 snapshot config $V1 snap-max-hard-limit 100
 
 TEST glusterfs -s $H1 --volfile-id=/snaps/${V0}_snap/${V0} $M0
-sleep 2
-TEST umount -f $M0
+EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0
 TEST glusterfs -s $H2 --volfile-id=/snaps/${V1}_snap/${V1} $M0
-sleep 2
-TEST umount -f $M0
+EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0
 
 #Clean up
 stop_force_volumes 2

@@ -1013,7 +1013,7 @@ posix_readlink (call_frame_t *frame, xlator_t *this,
                 goto out;
         }
 
-        op_ret = readlink (real_path, dest, size);
+        op_ret = sys_readlink (real_path, dest, size);
         if (op_ret == -1) {
                 op_errno = errno;
                 gf_log (this->name, GF_LOG_ERROR,
@@ -1343,17 +1343,22 @@ int32_t
 posix_unlink (call_frame_t *frame, xlator_t *this,
               loc_t *loc, int xflag, dict_t *xdata)
 {
-        int32_t               op_ret          = -1;
-        int32_t               op_errno        = 0;
-        char                 *real_path       = NULL;
-        char                 *par_path        = NULL;
-        int32_t               fd              = -1;
-        struct iatt           stbuf           = {0,};
-        struct posix_private *priv            = NULL;
-        struct iatt           preparent       = {0,};
-        struct iatt           postparent      = {0,};
-        char                 *pgfid_xattr_key = NULL;
-        int32_t               nlink_samepgfid = 0;
+        int32_t                op_ret             = -1;
+        int32_t                op_errno           = 0;
+        char                   *real_path         = NULL;
+        char                   *par_path          = NULL;
+        int32_t                fd                 = -1;
+        struct iatt            stbuf              = {0,};
+        struct posix_private  *priv               = NULL;
+        struct iatt            preparent          = {0,};
+        struct iatt            postparent         = {0,};
+        char                  *pgfid_xattr_key    = NULL;
+        int32_t                nlink_samepgfid    = 0;
+        int32_t                unlink_if_linkto   = 0;
+        int32_t                check_open_fd      = 0;
+        int32_t                skip_unlink        = 0;
+        ssize_t                xattr_size         = -1;
+        int32_t                is_dht_linkto_file = 0;
 
         DECLARE_OLD_FS_ID_VAR;
 
@@ -1377,6 +1382,55 @@ posix_unlink (call_frame_t *frame, xlator_t *this,
                 posix_handle_unset (this, stbuf.ia_gfid, NULL);
 
         priv = this->private;
+
+        op_ret = dict_get_int32 (xdata, "dont-unlink-for-open-fd",
+                                 &check_open_fd);
+
+        if (!op_ret && check_open_fd) {
+
+                LOCK (&loc->inode->lock);
+
+                if (loc->inode->fd_count) {
+                        skip_unlink = 1;
+                }
+
+                UNLOCK (&loc->inode->lock);
+
+                if (skip_unlink) {
+                        op_ret = -1;
+                        op_errno = EBUSY;
+                        goto out;
+                }
+        }
+
+
+        op_ret = dict_get_int32 (xdata, "unlink-only-if-dht-linkto-file",
+                                 &unlink_if_linkto);
+
+        if (!op_ret && unlink_if_linkto) {
+
+                LOCK (&loc->inode->lock);
+
+                xattr_size = sys_lgetxattr (real_path, LINKTO, NULL, 0);
+
+                if (xattr_size <= 0) {
+                        skip_unlink = 1;
+                } else {
+                       is_dht_linkto_file =  IS_DHT_LINKFILE_MODE (&stbuf);
+                       if (!is_dht_linkto_file)
+                               skip_unlink = 1;
+                }
+
+                UNLOCK (&loc->inode->lock);
+
+                if (skip_unlink) {
+                        op_ret = -1;
+                        op_errno = EBUSY;
+                        goto out;
+                }
+        }
+
+
         if (priv->background_unlink) {
                 if (IA_ISREG (loc->inode->ia_type)) {
                         fd = open (real_path, O_RDONLY);
@@ -2272,6 +2326,12 @@ posix_open (call_frame_t *frame, xlator_t *this,
 
         MAKE_INODE_HANDLE (real_path, this, loc, &stbuf);
 
+        if (IA_ISLNK (stbuf.ia_type)) {
+                op_ret = -1;
+                op_errno = ELOOP;
+                goto out;
+        }
+
         op_ret = -1;
         SET_FS_ID (frame->root->uid, frame->root->gid);
 
@@ -2282,8 +2342,8 @@ posix_open (call_frame_t *frame, xlator_t *this,
         if (_fd == -1) {
                 op_ret   = -1;
                 op_errno = errno;
-                gf_log (this->name, GF_LOG_ERROR,
-                        "open on %s: %s", real_path, strerror (op_errno));
+                gf_log (this->name, GF_LOG_ERROR, "open on %s, flags: %d: %s",
+                        real_path, flags, strerror (op_errno));
                 goto out;
         }
 
@@ -4828,7 +4888,7 @@ posix_readdirp_fill (xlator_t *this, fd_t *fd, gf_dirent_t *entries, dict_t *dic
 	int              len      = 0;
         struct iatt      stbuf    = {0, };
 	uuid_t           gfid;
-
+        int              ret      = -1;
 	if (list_empty(&entries->list))
 		return 0;
 
@@ -4849,7 +4909,10 @@ posix_readdirp_fill (xlator_t *this, fd_t *fd, gf_dirent_t *entries, dict_t *dic
 
 		strcpy (&hpath[len+1], entry->d_name);
 
-                posix_pstat (this, gfid, hpath, &stbuf);
+                ret = posix_pstat (this, gfid, hpath, &stbuf);
+
+                if (ret == -1)
+                      continue;
 
 		if (!inode)
 			inode = inode_find (itable, stbuf.ia_gfid);
@@ -5351,7 +5414,7 @@ init (xlator_t *this)
         /* Check for Extended attribute support, if not present, log it */
         op_ret = sys_lsetxattr (dir_data->data,
                                 "trusted.glusterfs.test", "working", 8, 0);
-        if (op_ret == 0) {
+        if (op_ret != -1) {
                 sys_lremovexattr (dir_data->data, "trusted.glusterfs.test");
         } else {
                 tmp_data = dict_get (this->options,
@@ -5459,7 +5522,7 @@ init (xlator_t *this)
                 /* First time volume, set the GFID */
                 size = sys_lsetxattr (dir_data->data, "trusted.gfid", rootgfid,
                                      16, XATTR_CREATE);
-                if (size) {
+                if (size == -1) {
                         gf_log (this->name, GF_LOG_ERROR,
                                 "%s: failed to set gfid (%s)",
                                 dir_data->data, strerror (errno));

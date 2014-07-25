@@ -84,6 +84,14 @@ function cleanup_mount_statedump {
         cleanup_statedump $(get_mount_process_pid $vol)
 }
 
+function snap_client_connected_status {
+         local vol=$1
+         local fpath=$(generate_mount_statedump $vol)
+         up=$(grep -A2 xlator.protocol.client.$vol-snapd-client.priv $fpath | tail -1 | cut -f 2 -d'=')
+         rm -f $fpath
+         echo "$up"
+}
+
 function _afr_child_up_status {
         local vol=$1
         #brick_id is (brick-num in volume info - 1)
@@ -144,6 +152,10 @@ function nfs_up_status {
 
 function glustershd_up_status {
         gluster volume status | grep "Self-heal Daemon" | awk '{print $6}'
+}
+
+function quotad_up_status {
+        gluster volume status | grep "Quota Daemon" | awk '{print $6}'
 }
 
 function get_brick_pid {
@@ -358,4 +370,24 @@ function volume_exists() {
         else
                 return 0
         fi
+}
+
+function afr_get_index_count {
+        local brick=$1
+        ls $1/.glusterfs/indices/xattrop | grep -v xattrop | wc -l
+}
+
+function landfill_entry_count {
+        local brick=$1
+        ls $brick/.glusterfs/landfill | wc -l
+}
+
+function path_exists {
+        stat $1
+        if [ $? -eq 0 ]; then echo "Y"; else echo "N"; fi
+}
+
+function force_umount {
+        umount -f $1
+        if [ $? -eq 0 ]; then echo "Y"; else echo "N"; fi
 }

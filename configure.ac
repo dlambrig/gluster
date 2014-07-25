@@ -72,6 +72,8 @@ AC_CONFIG_FILES([Makefile
                 xlators/cluster/stripe/src/Makefile
                 xlators/cluster/dht/Makefile
                 xlators/cluster/dht/src/Makefile
+                xlators/cluster/ec/Makefile
+                xlators/cluster/ec/src/Makefile
                 xlators/performance/Makefile
                 xlators/performance/write-behind/Makefile
                 xlators/performance/write-behind/src/Makefile
@@ -117,6 +119,7 @@ AC_CONFIG_FILES([Makefile
                 xlators/features/glupy/examples/Makefile
                 xlators/features/glupy/src/Makefile
                 xlators/features/glupy/src/setup.py
+                xlators/features/glupy/src/__init__.py
                 xlators/features/locks/Makefile
                 xlators/features/locks/src/Makefile
                 xlators/features/quota/Makefile
@@ -139,6 +142,10 @@ AC_CONFIG_FILES([Makefile
                 xlators/features/protect/src/Makefile
                 xlators/features/gfid-access/Makefile
                 xlators/features/gfid-access/src/Makefile
+                xlators/features/snapview-server/Makefile
+                xlators/features/snapview-server/src/Makefile
+                xlators/features/snapview-client/Makefile
+                xlators/features/snapview-client/src/Makefile
                 xlators/playground/Makefile
                 xlators/playground/template/Makefile
                 xlators/playground/template/src/Makefile
@@ -166,6 +173,7 @@ AC_CONFIG_FILES([Makefile
                 extras/init.d/glusterd.plist
                 extras/init.d/glusterd-Debian
                 extras/init.d/glusterd-Redhat
+                extras/init.d/glusterd-FreeBSD
                 extras/init.d/glusterd-SuSE
                 extras/systemd/Makefile
                 extras/systemd/glusterd.service
@@ -195,8 +203,6 @@ AC_CONFIG_FILES([Makefile
                 api/Makefile
                 api/src/Makefile
                 api/examples/Makefile
-                api/examples/__init__.py
-                api/examples/setup.py
                 geo-replication/Makefile
                 geo-replication/src/Makefile
                 geo-replication/syncdaemon/Makefile
@@ -225,6 +231,18 @@ else
         BUILD_DEBUG=no
         CFLAGS="${CFLAGS} -g -O2"
 fi
+
+case $host_os in
+  darwin*)
+    if ! test "`/usr/bin/sw_vers | grep ProductVersion: | cut -f 2 | cut -d. -f2`" -ge 7; then
+       AC_MSG_ERROR([You need at least OS X 10.7 (Lion) to build Glusterfs])
+    fi
+    # OSX version lesser than 9 has llvm/clang optimization issues which leads to various segfaults
+    if test "`/usr/bin/sw_vers | grep ProductVersion: | cut -f 2 | cut -d. -f2`" -lt 9; then
+       CFLAGS="${CFLAGS} -g -O0 -DDEBUG"
+    fi
+    ;;
+esac
 
 AC_ARG_WITH(pkgconfigdir,
             [  --with-pkgconfigdir=DIR      pkgconfig file in DIR @<:@LIBDIR/pkgconfig@:>@],
@@ -297,9 +315,16 @@ AC_CHECK_LIB([crypto], [MD5], , AC_MSG_ERROR([OpenSSL crypto library is required
 
 AC_CHECK_LIB([pthread], [pthread_mutex_init], , AC_MSG_ERROR([Posix threads library is required to build glusterfs]))
 
+AC_CHECK_LIB([cmockery], [mock_assert], , AC_MSG_ERROR([cmockery2 library is required to build glusterfs]))
+
 AC_CHECK_FUNC([dlopen], [has_dlopen=yes], AC_CHECK_LIB([dl], [dlopen], , AC_MSG_ERROR([Dynamic linking library required to build glusterfs])))
 
 AC_CHECK_LIB([readline], [rl_do_undo], [RL_UNDO="yes"], [RL_UNDO="no"])
+
+AC_CHECK_LIB([intl], [gettext])
+
+dnl Erasure Code xlator requires MMX instruction set
+AC_CHECK_HEADERS([xmmintrin.h], [enable_ec_xlator=yes], [enable_ec_xlator=no])
 
 AC_CHECK_HEADERS([sys/xattr.h])
 
@@ -310,16 +335,6 @@ AC_CHECK_HEADERS([sys/extattr.h])
 AC_CHECK_HEADERS([openssl/md5.h])
 
 AC_CHECK_HEADERS([linux/falloc.h])
-
-AC_CHECK_HEADERS([libintl.h])
-
-case $host_os in
-  darwin*)
-    if ! test "`/usr/bin/sw_vers | grep ProductVersion: | cut -f 2 | cut -d. -f2`" -ge 7; then
-      AC_MSG_ERROR([You need at least OS X 10.7 (Lion) to build Glusterfs])
-    fi
-    ;;
-esac
 
 dnl Mac OS X does not have spinlocks
 AC_CHECK_FUNC([pthread_spin_init], [have_spinlock=yes])
@@ -428,14 +443,22 @@ AC_ARG_ENABLE([fusermount],
 
 BUILD_FUSERMOUNT="yes"
 if test "x$enable_fusermount" = "xno"; then
-  BUILD_FUSERMOUNT="no"
+   BUILD_FUSERMOUNT="no"
 else
-  AC_DEFINE(GF_FUSERMOUNT, 1, [Use our own fusermount])
-  FUSERMOUNT_SUBDIR="contrib/fuse-util"
+   AC_DEFINE(GF_FUSERMOUNT, 1, [Use our own fusermount])
+   FUSERMOUNT_SUBDIR="contrib/fuse-util"
 fi
 
 AC_SUBST(FUSERMOUNT_SUBDIR)
 #end FUSERMOUNT section
+
+# Erasure Code xlator section
+BUILD_EC_XLATOR=no
+if test "x$enable_ec_xlator" = "xyes" ; then
+   EC_XLATOR_SUBDIR=ec
+   BUILD_EC_XLATOR="yes"
+fi
+AC_SUBST(EC_XLATOR_SUBDIR)
 
 # QEMU_BLOCK section
 
@@ -631,17 +654,13 @@ else
 fi
 # end of xml-output
 
-dnl FreeBSD > 5 has execinfo as a Ported library for giving a workaround
-dnl solution to GCC backtrace functionality
-
-AC_CHECK_HEADERS([execinfo.h], [have_backtrace=yes],
-               AC_CHECK_LIB([execinfo], [backtrace], [have_backtrace=yes]))
-dnl               AC_MSG_ERROR([libexecinfo not found libexecinfo required.])))
-
+AC_CHECK_HEADERS([execinfo.h], [have_backtrace=yes])
 if test "x${have_backtrace}" = "xyes"; then
    AC_DEFINE(HAVE_BACKTRACE, 1, [define if found backtrace])
 fi
 AC_SUBST(HAVE_BACKTRACE)
+
+AC_CHECK_LIB([m], [ceil], , AC_MSG_ERROR([glibc math package missing - required]))
 
 dnl glusterfs prints memory usage to stderr by sending it SIGUSR1
 AC_CHECK_FUNC([malloc_stats], [have_malloc_stats=yes])
@@ -656,7 +675,7 @@ dnl FreeBSD, NetBSD
 AC_CHECK_MEMBERS([struct stat.st_atimespec.tv_nsec])
 case $host_os in
         *netbsd*)
-        CFLAGS="${CFLAGS} -D_INCOMPLETE_XOPEN_C063"
+        CFLAGS="${CFLAGS} -D_INCOMPLETE_XOPEN_C063 -DCONFIG_MACHINE_BSWAP_H"
         ;;
 esac
 AC_CHECK_FUNC([linkat], [have_linkat=yes])
@@ -667,6 +686,12 @@ AC_SUBST(HAVE_LINKAT)
 
 dnl check for Monotonic clock
 AC_CHECK_FUNC([clock_gettime], [has_monotonic_clock=yes], AC_CHECK_LIB([rt], [clock_gettime], , AC_MSG_WARN([System doesn't have monotonic clock using contrib])))
+
+dnl Add cmockery2 for unit tests
+UNITTEST_CFLAGS='-g -Wall -DUNIT_TESTING=1 -DDEBUG -Werror -O0 --coverage'
+UNITTEST_LDFLAGS='-lcmockery -lgcov'
+AC_SUBST(UNITTEST_CFLAGS)
+AC_SUBST(UNITTEST_LDFLAGS)
 
 dnl Check for argp
 AC_CHECK_HEADER([argp.h], AC_DEFINE(HAVE_ARGP, 1, [have argp]))
@@ -766,9 +791,23 @@ AC_COMPILE_IFELSE(
 AC_MSG_RESULT([$CLANG])
 
 if test "x$CLANG" = "xyes"; then
-    GF_COMPILER_FLAGS="-Wno-gnu -Wno-unknown-pragmas -Wno-deprecated-declarations -Wno-enum-conversion"
+   GF_COMPILER_FLAGS="-Wno-gnu"
 fi
 
+if test "x$ac_cv_header_execinfo_h" = "xno"; then
+   # The reason is that __builtin_frame_address(n) for n > 0 seems
+   # to just crash on most platforms when -fomit-stack-pointer is
+   # specified, which seems to be the default for many platforms on
+   # -O2. The documentation says that __builtin_frame_address()
+   # should return NULL in case it can't get the frame, but it
+   # seems to crash instead.
+
+   # execinfo.c in ./contrib/libexecinfo uses __builtin_frame_address(n)
+   # for providing cross platform backtrace*() functions.
+   if test "x$CLANG" = "xno"; then
+      CFLAGS="$CFLAGS -fno-omit-frame-pointer"
+   fi
+fi
 
 case $host_os in
      linux*)
@@ -791,6 +830,7 @@ case $host_os in
         GF_CFLAGS="${ARGP_STANDALONE_CPPFLAGS} -D_INCOMPLETE_XOPEN_C063"
         GF_CFLAGS="${GF_CFLAGS} -DTHREAD_UNSAFE_BASENAME"
         GF_CFLAGS="${GF_CFLAGS} -DTHREAD_UNSAFE_DIRNAME"
+        GF_FUSE_CFLAGS="-DFUSERMOUNT_DIR=\\\"\$(sbindir)\\\""
         GF_LDADD="${ARGP_STANDALONE_LDADD}"
         if test "x$ac_cv_header_execinfo_h" = "xyes"; then
            GF_GLUSTERFS_LIBS="-lexecinfo"
@@ -798,22 +838,41 @@ case $host_os in
         GF_FUSE_LDADD="-lperfuse"
         BUILD_FUSE_CLIENT=yes
         LEXLIB=""
+        BUILD_FUSERMOUNT=no
+        FUSERMOUNT_SUBDIR=""
         ;;
-     *bsd*)
+     *freebsd*)
         GF_HOST_OS="GF_BSD_HOST_OS"
-        GF_CFLAGS="${ARGP_STANDALONE_CPPFLAGS}"
+        GF_CFLAGS="${ARGP_STANDALONE_CPPFLAGS} -O0"
         GF_CFLAGS="${GF_CFLAGS} -DTHREAD_UNSAFE_BASENAME"
         GF_CFLAGS="${GF_CFLAGS} -DTHREAD_UNSAFE_DIRNAME"
-        GF_LDADD="${ARGP_STANDALONE_LDADD}"
+        GF_CFLAGS="${GF_CFLAGS} -D_LIBGEN_H_"
+        GF_CFLAGS="${GF_CFLAGS} -DO_DSYNC=0"
+        GF_CFLAGS="${GF_CFLAGS} -Dxdr_quad_t=xdr_longlong_t"
+        GF_CFLAGS="${GF_CFLAGS} -Dxdr_u_quad_t=xdr_u_longlong_t"
+        GF_GLUSTERFS_CFLAGS="${GF_CFLAGS}"
+        GF_FUSE_CFLAGS="-DFUSERMOUNT_DIR=\\\"\$(sbindir)\\\""
+        GF_FUSE_LIBS="${GF_FUSE_LIBS} /usr/lib/libutil.so"
+        GF_FUSE_LDADD="-lutil"
+        GF_CFLAGS=" -I/usr/local/include ${GF_CFLAGS}"
+        CFLAGS=" -std=gnu89 ${CFLAGS}"
+        GF_CFLAGS=" -std=gnu89 ${GF_CFLAGS}"
+        GF_GLUSTERFS_CFLAGS="${GF_CFLAGS}"
+        GF_LDADD="${ARGP_STANDALONE_LDADD} /usr/local/lib/libpython2.7.so /usr/local/lib/libintl.so"
+        LDFLAGS="${LDFLAGS} -L/usr/local/lib"
         if test "x$ac_cv_header_execinfo_h" = "xyes"; then
            GF_GLUSTERFS_LIBS="-lexecinfo"
         fi
-        BUILD_FUSE_CLIENT=no
+        BUILD_FUSERMOUNT=no
+        BUILD_QEMU_BLOCK=no
+        FUSERMOUNT_SUBDIR=""
         ;;
      darwin*)
         GF_HOST_OS="GF_DARWIN_HOST_OS"
         LIBTOOL=glibtool
-        GF_CFLAGS="${GF_COMPILER_FLAGS} ${ARGP_STANDALONE_CPPFLAGS} -D__DARWIN_64_BIT_INO_T -D_XOPEN_SOURCE "
+        GF_CFLAGS="${GF_COMPILER_FLAGS} ${ARGP_STANDALONE_CPPFLAGS} "
+        GF_CFLAGS="${GF_CFLAGS} -D_REENTRANT -D_XOPEN_SOURCE "
+        GF_CFLAGS="${GF_CFLAGS} -D_DARWIN_USE_64_BIT_INODE "
         GF_CFLAGS="${GF_CFLAGS} -DTHREAD_UNSAFE_BASENAME"
         GF_CFLAGS="${GF_CFLAGS} -DTHREAD_UNSAFE_DIRNAME"
         GF_LDADD="${ARGP_STANDALONE_LDADD}"
@@ -855,7 +914,7 @@ AC_CHECK_LIB([readline -ltermcap],[readline],[RLLIBS="-lreadline -ltermcap"])
 AC_CHECK_LIB([readline -lncurses],[readline],[RLLIBS="-lreadline -lncurses"])
 
 if test "x$RLLIBS" != "x"; then
-   if test "x$RL_UNDO" == "xyes"; then
+   if test "x$RL_UNDO" = "xyes"; then
       AC_DEFINE(HAVE_READLINE, 1, [readline enabled CLI])
       BUILD_READLINE=yes
    else
@@ -986,12 +1045,14 @@ GF_CPPINCLUDES='-I$(top_srcdir)/libglusterfs/src -I$(CONTRIBDIR)/uuid'
 GF_CPPFLAGS="$GF_CPPDEFINES $GF_CPPINCLUDES"
 AC_SUBST([GF_CPPFLAGS])
 
+AM_CONDITIONAL([GF_LINUX_HOST_OS], test "${GF_HOST_OS}" = "GF_LINUX_HOST_OS")
 AM_CONDITIONAL([GF_DARWIN_HOST_OS], test "${GF_HOST_OS}" = "GF_DARWIN_HOST_OS")
+AM_CONDITIONAL([GF_BSD_HOST_OS], test "${GF_HOST_OS}" = "GF_BSD_HOST_OS")
 
 AM_CONDITIONAL([GF_INSTALL_VAR_LIB_GLUSTERD], test ! -d ${localstatedir}/lib/glusterd && test -d ${sysconfdir}/glusterd )
 
 dnl pkg-config versioning
-GFAPI_VERSION="6.0.0"
+GFAPI_VERSION="7.0.0"
 LIBGFCHANGELOG_VERSION="0.0.1"
 AC_SUBST(GFAPI_VERSION)
 AC_SUBST(LIBGFCHANGELOG_VERSION)
@@ -1001,7 +1062,7 @@ LIBGFXDR_LT_VERSION="0:1:0"
 LIBGFRPC_LT_VERSION="0:1:0"
 LIBGLUSTERFS_LT_VERSION="0:1:0"
 LIBGFCHANGELOG_LT_VERSION="0:1:0"
-GFAPI_LT_VERSION="6:0:0"
+GFAPI_LT_VERSION="7:0:0"
 AC_SUBST(LIBGFXDR_LT_VERSION)
 AC_SUBST(LIBGFRPC_LT_VERSION)
 AC_SUBST(LIBGLUSTERFS_LT_VERSION)
@@ -1029,4 +1090,5 @@ echo "Use syslog           : $USE_SYSLOG"
 echo "XML output           : $BUILD_XML_OUTPUT"
 echo "QEMU Block formats   : $BUILD_QEMU_BLOCK"
 echo "Encryption xlator    : $BUILD_CRYPT_XLATOR"
+echo "Erasure Code xlator  : $BUILD_EC_XLATOR"
 echo

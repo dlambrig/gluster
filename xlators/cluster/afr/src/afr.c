@@ -85,7 +85,7 @@ void
 fix_quorum_options (xlator_t *this, afr_private_t *priv, char *qtype)
 {
         if (priv->quorum_count && strcmp(qtype,"fixed")) {
-                gf_log(this->name,GF_LOG_WARNING,
+                gf_msg (this->name,GF_LOG_WARNING, 0, AFR_MSG_QUORUM_OVERRIDE,
                        "quorum-type %s overriding quorum-count %u",
                        qtype, priv->quorum_count);
         }
@@ -180,6 +180,10 @@ reconfigure (xlator_t *this, dict_t *options)
         GF_OPTION_RECONF ("quorum-count", priv->quorum_count, options,
                           uint32, out);
         fix_quorum_options(this,priv,qtype);
+        if (priv->quorum_count && !afr_has_quorum (priv->child_up, this))
+                gf_msg (this->name, GF_LOG_WARNING, 0, AFR_MSG_QUORUM_FAIL,
+                        "Client-quorum is not met");
+
 
 	GF_OPTION_RECONF ("post-op-delay-secs", priv->post_op_delay_secs, options,
 			  uint32, out);
@@ -456,9 +460,6 @@ struct xlator_fops fops = {
         .finodelk    = afr_finodelk,
         .entrylk     = afr_entrylk,
         .fentrylk    = afr_fentrylk,
-	.fallocate   = afr_fallocate,
-	.discard     = afr_discard,
-        .zerofill    = afr_zerofill,
 
         /* inode read */
         .access      = afr_access,
@@ -479,6 +480,9 @@ struct xlator_fops fops = {
         .fsetattr    = afr_fsetattr,
         .removexattr = afr_removexattr,
         .fremovexattr = afr_fremovexattr,
+        .fallocate   = afr_fallocate,
+        .discard     = afr_discard,
+        .zerofill    = afr_zerofill,
 
         /* dir read */
         .opendir     = afr_opendir,

@@ -24,16 +24,23 @@
 
 #define GLUSTERFS_ENV_MEM_ACCT_STR  "GLUSTERFS_DISABLE_MEM_ACCT"
 
+#include <cmockery/pbc.h>
+#include <cmockery/cmockery_override.h>
+
 void
 gf_mem_acct_enable_set (void *data)
 {
         glusterfs_ctx_t *ctx = NULL;
+
+        REQUIRE(data != NULL);
 
         ctx = data;
 
         GF_ASSERT (ctx != NULL);
 
         ctx->mem_acct_enable = 1;
+
+        ENSURE(1 == ctx->mem_acct_enable);
 
         return;
 }
@@ -150,6 +157,8 @@ __gf_realloc (void *ptr, size_t size)
 
         if (!THIS->ctx->mem_acct_enable)
                 return REALLOC (ptr, size);
+
+        REQUIRE(NULL != ptr);
 
         tot_size = size + GF_MEM_HEADER_SIZE + GF_MEM_TRAILER_SIZE;
 
@@ -284,10 +293,10 @@ mem_pool_new_fn (unsigned long sizeof_type,
 {
         struct mem_pool  *mem_pool = NULL;
         unsigned long     padded_sizeof_type = 0;
-        void             *pool = NULL;
-        int               i = 0;
+        GF_UNUSED void             *pool = NULL;
+        GF_UNUSED int               i = 0;
         int               ret = 0;
-        struct list_head *list = NULL;
+        GF_UNUSED struct list_head *list = NULL;
         glusterfs_ctx_t  *ctx = NULL;
 
         if (!sizeof_type || !count) {
@@ -314,9 +323,10 @@ mem_pool_new_fn (unsigned long sizeof_type,
         INIT_LIST_HEAD (&mem_pool->global_list);
 
         mem_pool->padded_sizeof_type = padded_sizeof_type;
-        mem_pool->cold_count = count;
         mem_pool->real_sizeof_type = sizeof_type;
 
+#ifndef DEBUG
+        mem_pool->cold_count = count;
         pool = GF_CALLOC (count, padded_sizeof_type, gf_common_mt_long);
         if (!pool) {
                 GF_FREE (mem_pool->name);
@@ -332,6 +342,7 @@ mem_pool_new_fn (unsigned long sizeof_type,
 
         mem_pool->pool = pool;
         mem_pool->pool_end = pool + (count * (padded_sizeof_type));
+#endif
 
         /* add this pool to the global list */
         ctx = THIS->ctx;

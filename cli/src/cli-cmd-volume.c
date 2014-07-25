@@ -29,6 +29,7 @@
 #include "cli1-xdr.h"
 #include "run.h"
 #include "syscall.h"
+#include "common-utils.h"
 
 extern struct rpc_clnt *global_rpc;
 extern struct rpc_clnt *global_quotad_rpc;
@@ -361,7 +362,7 @@ cli_cmd_volume_create_cbk (struct cli_state *state, struct cli_cmd_word *word,
         if (!frame)
                 goto out;
 
-        ret = cli_cmd_volume_create_parse (words, wordcount, &options);
+        ret = cli_cmd_volume_create_parse (state, words, wordcount, &options);
 
         if (ret) {
                 cli_usage_out (word->pattern);
@@ -375,31 +376,54 @@ cli_cmd_volume_create_cbk (struct cli_state *state, struct cli_cmd_word *word,
                 goto out;
         }
         if ((type == GF_CLUSTER_TYPE_REPLICATE) ||
-            (type == GF_CLUSTER_TYPE_STRIPE_REPLICATE)) {
-                if ((ret = dict_get_str (options, "bricks", &brick_list)) != 0) {
-                        gf_log ("cli", GF_LOG_ERROR, "Replica bricks check : "
-                                                     "Could not retrieve bricks list");
+            (type == GF_CLUSTER_TYPE_STRIPE_REPLICATE) ||
+            (type == GF_CLUSTER_TYPE_DISPERSE)) {
+                if ((ret = dict_get_str (options, "bricks",
+                                         &brick_list)) != 0) {
+                        gf_log ("cli", GF_LOG_ERROR, "Bricks check : Could "
+                                                     "not retrieve bricks "
+                                                     "list");
                         goto out;
                 }
-                if ((ret = dict_get_int32 (options, "count", &brick_count)) != 0) {
-                        gf_log ("cli", GF_LOG_ERROR, "Replica bricks check : "
-                                                     "Could not retrieve brick count");
+                if ((ret = dict_get_int32 (options, "count",
+                                           &brick_count)) != 0) {
+                        gf_log ("cli", GF_LOG_ERROR, "Bricks check : Could "
+                                                     "not retrieve brick "
+                                                     "count");
                         goto out;
                 }
-                if ((ret = dict_get_int32 (options, "replica-count", &sub_count)) != 0) {
-                        gf_log ("cli", GF_LOG_ERROR, "Replica bricks check : "
-                                                    "Could not retrieve replica count");
-                        goto out;
+
+                if (type != GF_CLUSTER_TYPE_DISPERSE) {
+                    if ((ret = dict_get_int32 (options, "replica-count",
+                                               &sub_count)) != 0) {
+                            gf_log ("cli", GF_LOG_ERROR, "Bricks check : "
+                                                         "Could not retrieve "
+                                                         "replica count");
+                            goto out;
+                    }
+                    gf_log ("cli", GF_LOG_INFO, "Replicate cluster type found."
+                                                " Checking brick order.");
+                } else {
+                    ret = dict_get_int32 (options, "disperse-count",
+                                          &sub_count);
+                    if (ret) {
+                            gf_log ("cli", GF_LOG_ERROR, "Bricks check : "
+                                                         "Could not retrieve "
+                                                         "disperse count");
+                            goto out;
+                    }
+                    gf_log ("cli", GF_LOG_INFO, "Disperse cluster type found. "
+                                                "Checking brick order.");
                 }
-                gf_log ("cli", GF_LOG_INFO, "Replicate cluster type found."
-                                            " Checking brick order.");
-                ret = cli_cmd_check_brick_order (state, brick_list, brick_count, sub_count);
+                ret = cli_cmd_check_brick_order (state, brick_list,
+                                                 brick_count, sub_count);
                 if (ret) {
-                        gf_log("cli", GF_LOG_INFO, "Not creating volume because of bad brick order");
+                        gf_log("cli", GF_LOG_INFO, "Not creating volume "
+                                                   "because of bad brick "
+                                                   "order");
                         goto out;
                 }
         }
-
 
         ret = dict_get_str (options, "transport", &trans_type);
         if (ret) {
@@ -1038,6 +1062,7 @@ gf_cli_create_auxiliary_mount (char *volname)
         char     mountdir[PATH_MAX]      = {0,};
         char     pidfile_path[PATH_MAX]  = {0,};
         char     logfile[PATH_MAX]       = {0,};
+        char     qpid [16]               = {0,};
 
         GLUSTERFS_GET_AUX_MOUNT_PIDFILE (pidfile_path, volname);
 
@@ -1059,14 +1084,16 @@ gf_cli_create_auxiliary_mount (char *volname)
 
         snprintf (logfile, PATH_MAX-1, "%s/quota-mount-%s.log",
                   DEFAULT_LOG_FILE_DIRECTORY, volname);
+        snprintf(qpid, 15, "%d", GF_CLIENT_PID_QUOTA_MOUNT);
 
         ret = runcmd (SBIN_DIR"/glusterfs",
                       "-s", "localhost",
                       "--volfile-id", volname,
                       "-l", logfile,
                       "-p", pidfile_path,
+                      "--client-pid", qpid,
                       mountdir,
-                      "--client-pid", "-42", NULL);
+                      NULL);
 
         if (ret) {
                 gf_log ("cli", GF_LOG_WARNING, "failed to mount glusterfs "
@@ -2324,6 +2351,7 @@ struct cli_cmd volume_cmds[] = {
           "list information of all volumes"},
 
         { "volume create <NEW-VOLNAME> [stripe <COUNT>] [replica <COUNT>] "
+          "[disperse [<COUNT>]] [redundancy <COUNT>] "
           "[transport <tcp|rdma|tcp,rdma>] <NEW-BRICK>"
 #ifdef HAVE_BD_XLATOR
           "?<vg_name>"
@@ -2397,7 +2425,7 @@ struct cli_cmd volume_cmds[] = {
 
 #if (SYNCDAEMON_COMPILE)
         {"volume "GEOREP" [<VOLNAME>] [<SLAVE-URL>] {create [push-pem] [force]"
-         "|start [force]|stop [force]|config|status [detail]|delete} [options...]",
+         "|start [force]|stop [force]|pause [force]|resume [force]|config|status [detail]|delete} [options...]",
          cli_cmd_volume_gsync_set_cbk,
          "Geo-sync operations",
          cli_cmd_check_gsync_exists_cbk},

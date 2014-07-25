@@ -203,8 +203,17 @@ struct changelog_priv {
         /* logging directory */
         char *changelog_dir;
 
+        /* htime directory */
+        char *htime_dir;
+
         /* one file for all changelog types */
         int changelog_fd;
+
+        /* htime fd for current changelog session */
+        int htime_fd;
+
+        /* rollover_count used by htime */
+        int  rollover_count;
 
         gf_lock_t lock;
 
@@ -271,6 +280,9 @@ struct changelog_priv {
         gf_boolean_t      barrier_enabled;
         struct list_head  queue;
         uint32_t          queue_size;
+        gf_timer_t       *timer;
+        struct timespec   timeout;
+
 };
 
 struct changelog_local {
@@ -393,6 +405,11 @@ void *
 changelog_fsync_thread (void *data);
 int
 changelog_forget (xlator_t *this, inode_t *inode);
+int
+htime_update (xlator_t *this, changelog_priv_t *priv,
+              unsigned long ts, char * buffer);
+int
+htime_open (xlator_t *this, changelog_priv_t * priv, unsigned long ts);
 
 /* Geo-Rep snapshot dependency changes */
 void
@@ -419,6 +436,8 @@ void __chlog_barrier_enqueue (xlator_t *this, call_stub_t *stub);
 void __chlog_barrier_disable (xlator_t *this, struct list_head *queue);
 void chlog_barrier_dequeue_all (xlator_t *this, struct list_head *queue);
 call_stub_t *__chlog_barrier_dequeue (xlator_t *this, struct list_head *queue);
+int __chlog_barrier_enable (xlator_t *this, changelog_priv_t *priv);
+
 
 /* macros */
 
@@ -502,9 +521,13 @@ call_stub_t *__chlog_barrier_dequeue (xlator_t *this, struct list_head *queue);
                         goto label;                             \
         } while (0)
 
-/* ignore internal fops */
-#define CHANGELOG_IF_INTERNAL_FOP_THEN_GOTO(dict, label) do {           \
-                if (dict && dict_get (dict, GLUSTERFS_INTERNAL_FOP_KEY)) \
+/**
+ * ignore internal fops for all clients except AFR self-heal daemon
+ */
+#define CHANGELOG_IF_INTERNAL_FOP_THEN_GOTO(frame, dict, label) do {    \
+                if ((frame->root->pid != GF_CLIENT_PID_AFR_SELF_HEALD)  \
+                    && dict                                             \
+                    && dict_get (dict, GLUSTERFS_INTERNAL_FOP_KEY))     \
                         goto label;                                     \
         } while (0)
 
@@ -549,5 +572,6 @@ call_stub_t *__chlog_barrier_dequeue (xlator_t *this, struct list_head *queue);
                         goto label;                                            \
                 }                                                              \
         } while (0)
-#endif /* _CHANGELOG_HELPERS_H */
 /* End: Geo-Rep snapshot dependency changes */
+
+#endif /* _CHANGELOG_HELPERS_H */

@@ -46,7 +46,7 @@
 #include "afr-transaction.h"
 #include "afr-self-heal.h"
 #include "afr-self-heald.h"
-
+#include "afr-messages.h"
 
 call_frame_t *
 afr_copy_frame (call_frame_t *base)
@@ -514,7 +514,7 @@ afr_inode_refresh_done (call_frame_t *frame, xlator_t *this)
 	if (ret && afr_selfheal_enabled (this)) {
 		heal = copy_frame (frame);
 		if (heal)
-			heal->root->pid = -1;
+			heal->root->pid = GF_CLIENT_PID_AFR_SELF_HEALD;
 		ret = synctask_new (this->ctx->env, afr_refresh_selfheal_wrap,
 				    afr_refresh_selfheal_done, heal, frame);
 		if (ret)
@@ -1157,17 +1157,18 @@ afr_lookup_done (call_frame_t *frame, xlator_t *this)
 	afr_inode_read_subvol_get (local->loc.parent, this, readable,
 				   NULL, &event);
 
-	/* First, check if we have an ESTALE from somewhere,
-	   If so, propagate that so that a revalidate can be
+	/* First, check if we have a gfid-change from somewhere,
+	   If so, propagate that so that a fresh lookup can be
 	   issued
 	*/
+        if (local->cont.lookup.needs_fresh_lookup) {
+                local->op_ret = -1;
+                local->op_errno = ESTALE;
+                goto unwind;
+        }
+
 	op_errno = afr_final_errno (frame->local, this->private);
 	local->op_errno = op_errno;
-        if (op_errno == ESTALE) {
-		local->op_errno = op_errno;
-		local->op_ret = -1;
-                goto unwind;
-	}
 
 	read_subvol = -1;
 	for (i = 0; i < priv->child_count; i++) {
@@ -1270,7 +1271,7 @@ unwind:
  * others in that they must be given higher priority while
  * returning to the user.
  *
- * The hierarchy is ESTALE > ENOENT > others
+ * The hierarchy is ENODATA > ENOENT > ESTALE > others
  */
 
 int
@@ -1278,10 +1279,10 @@ afr_higher_errno (int32_t old_errno, int32_t new_errno)
 {
 	if (old_errno == ENODATA || new_errno == ENODATA)
 		return ENODATA;
+        if (old_errno == ENOENT || new_errno == ENOENT)
+                return ENOENT;
 	if (old_errno == ESTALE || new_errno == ESTALE)
 		return ESTALE;
-	if (old_errno == ENOENT || new_errno == ENOENT)
-		return ENOENT;
 
 	return new_errno;
 }
@@ -1493,7 +1494,7 @@ afr_lookup_entry_heal (call_frame_t *frame, xlator_t *this)
 	if (need_heal) {
 		heal = copy_frame (frame);
 		if (heal)
-			heal->root->pid = -1;
+			heal->root->pid = GF_CLIENT_PID_AFR_SELF_HEALD;
 		ret = synctask_new (this->ctx->env, afr_lookup_selfheal_wrap,
 				    afr_refresh_selfheal_done, heal, frame);
 		if (ret)
@@ -1523,6 +1524,14 @@ afr_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 	local->replies[child_index].valid = 1;
 	local->replies[child_index].op_ret = op_ret;
 	local->replies[child_index].op_errno = op_errno;
+        /*
+         * On revalidate lookup if the gfid-changed, afr should unwind the fop
+         * with ESTALE so that a fresh lookup will be sent by the top xlator.
+         * So remember it.
+         */
+        if (xdata && dict_get (xdata, "gfid-changed"))
+                local->cont.lookup.needs_fresh_lookup = _gf_true;
+
 	if (op_ret != -1) {
 		local->replies[child_index].poststat = *buf;
 		local->replies[child_index].postparent = *postparent;
@@ -3144,6 +3153,8 @@ afr_notify (xlator_t *this, int32_t event,
         int             up_child            = -1;
         dict_t          *input              = NULL;
         dict_t          *output             = NULL;
+        gf_boolean_t    had_quorum          = _gf_false;
+        gf_boolean_t    has_quorum          = _gf_false;
 
         priv = this->private;
 
@@ -3176,11 +3187,13 @@ afr_notify (xlator_t *this, int32_t event,
          */
         idx = find_child_index (this, data);
         if (idx < 0) {
-                gf_log (this->name, GF_LOG_ERROR, "Received child_up "
-                        "from invalid subvolume");
+                gf_msg (this->name, GF_LOG_ERROR, 0, AFR_MSG_INVALID_CHILD_UP,
+                        "Received child_up from invalid subvolume");
                 goto out;
         }
 
+        had_quorum = priv->quorum_count && afr_has_quorum (priv->child_up,
+                                                           this);
         switch (event) {
         case GF_EVENT_CHILD_UP:
                 LOCK (&priv->lock);
@@ -3203,7 +3216,8 @@ afr_notify (xlator_t *this, int32_t event,
                                 if (priv->child_up[i] == 1)
                                         up_children++;
                         if (up_children == 1) {
-                                gf_log (this->name, GF_LOG_INFO,
+                                gf_msg (this->name, GF_LOG_INFO, 0,
+                                        AFR_MSG_SUBVOL_UP,
                                         "Subvolume '%s' came back up; "
                                         "going online.", ((xlator_t *)data)->name);
                         } else {
@@ -3241,7 +3255,8 @@ afr_notify (xlator_t *this, int32_t event,
                                 if (priv->child_up[i] == 0)
                                         down_children++;
                         if (down_children == priv->child_count) {
-                                gf_log (this->name, GF_LOG_ERROR,
+                                gf_msg (this->name, GF_LOG_ERROR, 0,
+                                        AFR_MSG_ALL_SUBVOLS_DOWN,
                                         "All subvolumes are down. Going offline "
                                         "until atleast one of them comes back up.");
                         } else {
@@ -3277,6 +3292,17 @@ afr_notify (xlator_t *this, int32_t event,
         default:
                 propagate = 1;
                 break;
+        }
+
+        if (priv->quorum_count) {
+                has_quorum = afr_has_quorum (priv->child_up, this);
+                if (!had_quorum && has_quorum)
+                        gf_msg (this->name, GF_LOG_INFO, 0, AFR_MSG_QUORUM_MET,
+                                "Client-quorum is met");
+                if (had_quorum && !has_quorum)
+                        gf_msg (this->name, GF_LOG_WARNING, 0,
+                                AFR_MSG_QUORUM_FAIL,
+                                "Client-quorum is not met");
         }
 
         /* have all subvolumes reported status once by now? */

@@ -201,18 +201,18 @@ server_submit_reply (call_frame_t *frame, rpcsvc_request_t *req, void *arg,
 
         ret = 0;
 ret:
-        if (state) {
+        if (state)
                 free_state (state);
-        }
 
-        if (frame) {
+        if (client)
                 gf_client_unref (client);
-                STACK_DESTROY (frame->root);
-        }
 
-        if (new_iobref) {
+        if (frame)
+                STACK_DESTROY (frame->root);
+
+        if (new_iobref)
                 iobref_unref (iobref);
-        }
+
         return ret;
 }
 
@@ -421,11 +421,10 @@ _check_for_auth_option (dict_t *d, char *k, data_t *v,
                         else
                                 addr = NULL;
                 }
-
-                GF_FREE (tmp_addr_list);
-                tmp_addr_list = NULL;
         }
 out:
+        GF_FREE (tmp_addr_list);
+
         return ret;
 }
 
@@ -515,7 +514,7 @@ server_rpc_notify (rpcsvc_t *rpc, void *xl, rpcsvc_event_t event,
                 if (!client)
                         break;
 
-                gf_log (this->name, GF_LOG_INFO, "disconnecting connection"
+                gf_log (this->name, GF_LOG_INFO, "disconnecting connection "
                         "from %s", client->client_uid);
 
                 /* If lock self heal is off, then destroy the
@@ -678,6 +677,8 @@ reconfigure (xlator_t *this, dict_t *options)
         data_t                   *data;
         int                       ret = 0;
         char                     *statedump_path = NULL;
+        xlator_t                 *xl     = NULL;
+
         conf = this->private;
 
         if (!conf) {
@@ -688,6 +689,14 @@ reconfigure (xlator_t *this, dict_t *options)
                 conf->inode_lru_limit = inode_lru_limit;
                 gf_log (this->name, GF_LOG_TRACE, "Reconfigured inode-lru-limit"
                         " to %d", conf->inode_lru_limit);
+
+                /* traverse through the xlator graph. For each xlator in the
+                   graph check whether it is a bound_xl or not (bound_xl means
+                   the xlator will have its itable pointer set). If so, then
+                   set the lru limit for the itable.
+                */
+                xlator_foreach (this, xlator_set_inode_lru_limit,
+                                &inode_lru_limit);
         }
 
         data = dict_get (options, "trace");
@@ -733,6 +742,17 @@ reconfigure (xlator_t *this, dict_t *options)
         ret = gf_auth_init (this, conf->auth_modules);
         if (ret) {
                 dict_unref (conf->auth_modules);
+                goto out;
+        }
+
+        GF_OPTION_RECONF ("manage-gids", conf->server_manage_gids, options,
+                          bool, out);
+
+        GF_OPTION_RECONF ("gid-timeout", conf->gid_cache_timeout, options,
+                          int32, out);
+        if (gid_cache_reconf (&conf->gid_cache, conf->gid_cache_timeout) < 0) {
+                gf_log(this->name, GF_LOG_ERROR, "Failed to reconfigure group "
+                        "cache.");
                 goto out;
         }
 
@@ -863,6 +883,19 @@ init (xlator_t *this)
                 goto out;
         }
 
+        ret = dict_get_str_boolean (this->options, "manage-gids", _gf_false);
+        if (ret == -1)
+                conf->server_manage_gids = _gf_false;
+        else
+                conf->server_manage_gids = ret;
+
+        GF_OPTION_INIT("gid-timeout", conf->gid_cache_timeout, int32, out);
+        if (gid_cache_init (&conf->gid_cache, conf->gid_cache_timeout) < 0) {
+                gf_log(this->name, GF_LOG_ERROR, "Failed to initialize "
+                        "group cache.");
+                goto out;
+        }
+
         /* RPC related */
         conf->rpc = rpcsvc_init (this, this->ctx, this->options, 0);
         if (conf->rpc == NULL) {
@@ -879,6 +912,12 @@ init (xlator_t *this)
                         "Failed to configure outstanding-rpc-limit");
                 goto out;
         }
+
+        /*
+         * This is the only place where we want secure_srvr to reflect
+         * the data-plane setting.
+         */
+        this->ctx->secure_srvr = MGMT_SSL_COPY_IO;
 
         ret = rpcsvc_create_listeners (conf->rpc, this->options,
                                        this->name);
@@ -1141,5 +1180,17 @@ struct volume_options options[] = {
                          "requests from a client. 0 means no limit (can "
                          "potentially run out of memory)"
         },
+
+        { .key   = {"manage-gids"},
+          .type  = GF_OPTION_TYPE_BOOL,
+          .default_value = "off",
+          .description = "Resolve groups on the server-side."
+        },
+        { .key = {"gid-timeout"},
+          .type = GF_OPTION_TYPE_INT,
+          .default_value = "2",
+          .description = "Timeout in seconds for the cached groups to expire."
+        },
+
         { .key   = {NULL} },
 };

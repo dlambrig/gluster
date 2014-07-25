@@ -37,6 +37,7 @@ contrib/uuid/uuid_types.h
 extras/init.d/glusterd-Debian
 extras/init.d/glusterd-Redhat
 extras/init.d/glusterd-SuSE
+extras/init.d/glusterd-FreeBSD
 extras/init.d/glusterd.plist
 extras/systemd/glusterd.service
 extras/ocf/glusterd
@@ -52,7 +53,6 @@ libgfchangelog.pc
 libglusterfs/src/graph.lex.c
 libglusterfs/src/y.tab.c
 libglusterfs/src/y.tab.h
-libglusterfs/src/gf-error-codes.h
 libtool
 run-tests.sh
 xlators/mount/fuse/utils/mount.glusterfs

@@ -1,5 +1,6 @@
 M0=${M0:=/mnt/glusterfs/0};   # 0th mount point for FUSE
 M1=${M1:=/mnt/glusterfs/1};   # 1st mount point for FUSE
+M2=${M1:=/mnt/glusterfs/2};   # 2nd mount point for FUSE
 N0=${N0:=/mnt/nfs/0};         # 0th mount point for NFS
 N1=${N1:=/mnt/nfs/1};         # 1st mount point for NFS
 V0=${V0:=patchy};             # volume name to use in tests
@@ -7,6 +8,18 @@ V1=${V1:=patchy1};            # volume name to use in tests
 B0=${B0:=/d/backends};        # top level of brick directories
 H0=${H0:=`hostname --fqdn`};  # hostname
 DEBUG=${DEBUG:=0}             # turn on debugging?
+
+PROCESS_UP_TIMEOUT=20
+NFS_EXPORT_TIMEOUT=20
+CHILD_UP_TIMEOUT=20
+PROBE_TIMEOUT=20
+REBALANCE_TIMEOUT=120
+REOPEN_TIMEOUT=20
+HEAL_TIMEOUT=60
+MARKER_UPDATE_TIMEOUT=20
+JANITOR_TIMEOUT=60
+UMOUNT_TIMEOUT=5
+
 statedumpdir=`gluster --print-statedumpdir`; # Default directory for statedump
 
 CLI="gluster --mode=script --wignore";
@@ -168,36 +181,26 @@ function _EXPECT_WITHIN()
         test_header "$@"
 
         e=$1;
+        a="";
         shift;
 
         local endtime=$(( ${timeout}+`date +%s` ))
 
-        local success=0
         while [ `date +%s` -lt $endtime ]; do
-                ("$@") | tail -1 | egrep -q "^${e}\$"
-
-                local pipestatus=(${PIPESTATUS[@]})
-
+                a=$("$@" | tail -1 ; exit ${PIPESTATUS[0]})
                 ## Check command success
-                if [ ${pipestatus[0]} -ne 0 ]; then
+                if [ $? -ne 0 ]; then
                         break;
                 fi
 
                 ## Check match success
-                if [ ${pipestatus[2]} -eq 0 ]; then
-                        success=1;
+                if [[ "$a" =~ "$e" ]]; then
                         break;
                 fi
                 sleep 1;
         done
 
-        if [ $success -eq 1 ]; then
-                true;
-        else
-                false;
-        fi
-
-        test_footer;
+        test_expect_footer "$e" "$a";
 }
 
 
@@ -229,6 +232,18 @@ function cleanup()
         do
                 umount $m
         done
+
+        # unregister nfs and related services from portmapper/rpcbind
+        ## nfs
+        rpcinfo -d 100003 3
+        ## mountd
+        rpcinfo -d 100005 1
+        rpcinfo -d 100005 3
+        ## nlockmgr
+        rpcinfo -d 100021 1
+        rpcinfo -d 100021 4
+        ## nfs_acl
+        rpcinfo -d 100227 3
 
         type cleanup_lvm &>/dev/null && cleanup_lvm
 
@@ -284,3 +299,14 @@ alias EXPECT_WITHIN='_EXPECT_WITHIN $LINENO'
 alias EXPECT_KEYWORD='_EXPECT_KEYWORD $LINENO'
 alias TEST_IN_LOOP='_TEST_IN_LOOP $LINENO'
 shopt -s expand_aliases
+
+ostype=$(uname -s)
+if [ x"$ostype" = x"Linux" ]; then
+	alias dd="dd status=none"
+elif [ x"$ostype" = x"NetBSD" ]; then
+	alias dd="dd msgfmt=quiet"
+fi
+# MacOS doesn't seem to support either option.  Doing nothing at all is
+# probably the safest option there and on anything we don't recognize, but
+# if you want to reduce the noise level and know the correct option for
+# your favorite platform please feel free to add it here.

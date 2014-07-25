@@ -35,6 +35,9 @@
 #define AUTH_REJECT_OPT_KEY "auth.addr.*.reject"
 #define NFS_DISABLE_OPT_KEY "nfs.*.disable"
 
+#define SSL_CERT_DEPTH_OPT  "ssl.certificate-depth"
+#define SSL_CIPHER_LIST_OPT "ssl.cipher-list"
+
 
 typedef enum {
         GF_CLIENT_TRUSTED,
@@ -125,6 +128,7 @@ void glusterd_get_shd_filepath (char *filename);
 int glusterd_create_nfs_volfile ();
 int glusterd_create_shd_volfile ();
 int glusterd_create_quotad_volfile ();
+int glusterd_create_snapd_volfile (glusterd_volinfo_t *volinfo);
 
 int glusterd_delete_volfile (glusterd_volinfo_t *volinfo,
                              glusterd_brickinfo_t *brickinfo);

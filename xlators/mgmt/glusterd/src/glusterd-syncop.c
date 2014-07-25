@@ -13,6 +13,7 @@
 #include "xdr-generic.h"
 #include "glusterd1-xdr.h"
 #include "glusterd-syncop.h"
+#include "glusterd-mgmt.h"
 
 #include "glusterd.h"
 #include "glusterd-op-sm.h"
@@ -31,62 +32,6 @@ gd_synctask_barrier_wait (struct syncargs *args, int count)
         synclock_lock (&conf->big_lock);
 
 	syncbarrier_destroy (&args->barrier);
-}
-
-static void
-gd_mgmt_v3_collate_errors (struct syncargs *args, int op_ret, int op_errno,
-                           char *op_errstr, int op_code,
-                           glusterd_peerinfo_t *peerinfo, u_char *uuid)
-{
-        char     err_str[PATH_MAX] = "Please check log file for details.";
-        char     op_err[PATH_MAX] = "";
-        char    *peer_str      = NULL;
-
-        if (op_ret) {
-                args->op_ret = op_ret;
-                args->op_errno = op_errno;
-
-                if (peerinfo)
-                        peer_str = peerinfo->hostname;
-                else
-                        peer_str = uuid_utoa (uuid);
-
-                if (op_errstr && strcmp (op_errstr, ""))
-                        snprintf (err_str, sizeof(err_str) - 1,
-                                  "Error: %s", op_errstr);
-
-                switch (op_code) {
-                        case GLUSTERD_MGMT_V3_LOCK:
-                        {
-                                snprintf (op_err, sizeof(op_err) - 1,
-                                          "Locking failed "
-                                          "on %s. %s", peer_str, err_str);
-                                break;
-                        }
-                        case GLUSTERD_MGMT_V3_UNLOCK:
-                        {
-                                snprintf (op_err, sizeof(op_err) - 1,
-                                          "Unlocking failed "
-                                          "on %s. %s", peer_str, err_str);
-                                break;
-                        }
-                }
-
-                if (args->errstr) {
-                        snprintf (err_str, sizeof(err_str) - 1,
-                                  "%s\n%s", args->errstr,
-                                  op_err);
-                        GF_FREE (args->errstr);
-                        args->errstr = NULL;
-                } else
-                        snprintf (err_str, sizeof(err_str) - 1,
-                                  "%s", op_err);
-
-                gf_log ("", GF_LOG_ERROR, "%s", op_err);
-                args->errstr = gf_strdup (err_str);
-        }
-
-        return;
 }
 
 static void
@@ -271,9 +216,24 @@ extern struct rpc_clnt_program gd_mgmt_v3_prog;
 int
 glusterd_syncop_aggr_rsp_dict (glusterd_op_t op, dict_t *aggr, dict_t *rsp)
 {
-        int ret = 0;
+        int        ret  = 0;
+        xlator_t  *this = NULL;
+
+        this = THIS;
+        GF_ASSERT (this);
 
         switch (op) {
+        case GD_OP_CREATE_VOLUME:
+        case GD_OP_ADD_BRICK:
+        case GD_OP_START_VOLUME:
+                ret = glusterd_aggr_brick_mount_dirs (aggr, rsp);
+                if (ret) {
+                        gf_log (this->name, GF_LOG_ERROR, "Failed to "
+                                "aggregate brick mount dirs");
+                        goto out;
+                }
+        break;
+
         case GD_OP_REPLACE_BRICK:
                 ret = glusterd_rb_use_rsp_dict (aggr, rsp);
                 if (ret)
@@ -713,8 +673,9 @@ _gd_syncop_stage_op_cbk (struct rpc_req *req, struct iovec *iov,
                 }
         }
 
-        ret = glusterd_friend_find (rsp.uuid, NULL, &peerinfo);
-        if (ret) {
+        peerinfo = glusterd_peerinfo_find (rsp.uuid, NULL);
+        if (peerinfo == NULL) {
+                ret = -1;
                 gf_log (this->name, GF_LOG_CRITICAL, "Staging response "
                         "for 'Volume %s' received from unknown "
                         "peer: %s", gd_op_list[rsp.op],
@@ -723,7 +684,9 @@ _gd_syncop_stage_op_cbk (struct rpc_req *req, struct iovec *iov,
         }
 
         uuid_copy (args->uuid, rsp.uuid);
-        if (rsp.op == GD_OP_REPLACE_BRICK || rsp.op == GD_OP_QUOTA) {
+        if (rsp.op == GD_OP_REPLACE_BRICK || rsp.op == GD_OP_QUOTA ||
+            rsp.op == GD_OP_CREATE_VOLUME || rsp.op == GD_OP_ADD_BRICK ||
+            rsp.op == GD_OP_START_VOLUME) {
                 pthread_mutex_lock (&args->lock_dict);
                 {
                         ret = glusterd_syncop_aggr_rsp_dict (rsp.op, args->dict,
@@ -967,8 +930,9 @@ _gd_syncop_commit_op_cbk (struct rpc_req *req, struct iovec *iov,
                 }
         }
 
-        ret = glusterd_friend_find (rsp.uuid, NULL, &peerinfo);
-        if (ret) {
+        peerinfo = glusterd_peerinfo_find (rsp.uuid, NULL);
+        if (peerinfo == NULL) {
+                ret = -1;
                 gf_log (this->name, GF_LOG_CRITICAL, "Commit response "
                         "for 'Volume %s' received from unknown "
                         "peer: %s", gd_op_list[rsp.op],
@@ -1099,7 +1063,7 @@ gd_lock_op_phase (glusterd_conf_t  *conf, glusterd_op_t op, dict_t *op_ctx,
         synctask_barrier_init((&args));
         peer_cnt = 0;
         list_for_each_entry (peerinfo, peers, op_peers_list) {
-                if (conf->op_version < GD_OP_VERSION_4) {
+                if (conf->op_version < GD_OP_VERSION_3_6_0) {
                         /* Reset lock status */
                         peerinfo->locked = _gf_false;
                         gd_syncop_mgmt_lock (peerinfo, &args,
@@ -1148,11 +1112,18 @@ gd_stage_op_phase (struct list_head *peers, glusterd_op_t op, dict_t *op_ctx,
         uuid_t              tmp_uuid        = {0};
         char                *errstr         = NULL;
         struct syncargs     args            = {0};
+        dict_t              *aggr_dict      = NULL;
 
         this = THIS;
         rsp_dict = dict_new ();
         if (!rsp_dict)
                 goto out;
+
+        if ((op == GD_OP_CREATE_VOLUME) || (op == GD_OP_ADD_BRICK) ||
+            (op == GD_OP_START_VOLUME))
+                aggr_dict = req_dict;
+        else
+                aggr_dict = op_ctx;
 
         ret = glusterd_op_stage_validate (op, req_dict, op_errstr, rsp_dict);
         if (ret) {
@@ -1160,8 +1131,10 @@ gd_stage_op_phase (struct list_head *peers, glusterd_op_t op, dict_t *op_ctx,
                 goto stage_done;
         }
 
-        if ((op == GD_OP_REPLACE_BRICK || op == GD_OP_QUOTA)) {
-                ret = glusterd_syncop_aggr_rsp_dict (op, op_ctx, rsp_dict);
+        if ((op == GD_OP_REPLACE_BRICK || op == GD_OP_QUOTA ||
+             op == GD_OP_CREATE_VOLUME || op == GD_OP_ADD_BRICK ||
+             op == GD_OP_START_VOLUME)) {
+                ret = glusterd_syncop_aggr_rsp_dict (op, aggr_dict, rsp_dict);
                 if (ret) {
                         gf_log (this->name, GF_LOG_ERROR, "%s",
                                 "Failed to aggregate response from node/brick");
@@ -1186,7 +1159,7 @@ stage_done:
                 goto out;
         }
 
-        gd_syncargs_init (&args, op_ctx);
+        gd_syncargs_init (&args, aggr_dict);
         synctask_barrier_init((&args));
         peer_cnt = 0;
         list_for_each_entry (peerinfo, peers, op_peers_list) {
@@ -1203,7 +1176,7 @@ stage_done:
 
         if (args.errstr)
                  *op_errstr = gf_strdup (args.errstr);
-        else if (dict_get_str (op_ctx, "errstr", &errstr) == 0)
+        else if (dict_get_str (aggr_dict, "errstr", &errstr) == 0)
                 *op_errstr = gf_strdup (errstr);
 
         ret = args.op_ret;
@@ -1213,7 +1186,8 @@ out:
                 ret = glusterd_validate_and_set_gfid (op_ctx, req_dict,
                                                       op_errstr);
                 if (ret)
-                        goto out;
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "Failed to validate and set gfid");
         }
 
         if (rsp_dict)
@@ -1336,6 +1310,8 @@ gd_unlock_op_phase (glusterd_conf_t  *conf, glusterd_op_t op, int *op_ret,
         struct list_head   *peers       = NULL;
 
         peers = &conf->xaction_peers;
+        this = THIS;
+        GF_ASSERT (this);
 
         if (!npeers) {
                 ret = 0;
@@ -1349,10 +1325,9 @@ gd_unlock_op_phase (glusterd_conf_t  *conf, glusterd_op_t op, int *op_ret,
                 goto out;
         }
 
-        this = THIS;
         synctask_barrier_init((&args));
         peer_cnt = 0;
-        if (conf->op_version < GD_OP_VERSION_4) {
+        if (conf->op_version < GD_OP_VERSION_3_6_0) {
                 list_for_each_entry_safe (peerinfo, tmp, peers, op_peers_list) {
                         /* Only unlock peers that were locked */
                         if (peerinfo->locked) {
@@ -1398,7 +1373,7 @@ out:
                  * and clear the op */
 
                 glusterd_op_clear_op (op);
-                if (conf->op_version < GD_OP_VERSION_4)
+                if (conf->op_version < GD_OP_VERSION_3_6_0)
                         glusterd_unlock (MY_UUID);
                 else {
                         if (volname) {
@@ -1414,6 +1389,13 @@ out:
 
         if (!*op_ret)
                 *op_ret = ret;
+
+        /*
+         * If there are any quorum events while the OP is in progress, process
+         * them.
+         */
+        if (conf->pending_quorum_action)
+                glusterd_do_quorum_action ();
 
         return 0;
 }
@@ -1562,7 +1544,7 @@ gd_sync_task_begin (dict_t *op_ctx, rpcsvc_request_t * req)
         }
 
         /* Based on the op_version, acquire a cluster or mgmt_v3 lock */
-        if (conf->op_version < GD_OP_VERSION_4) {
+        if (conf->op_version < GD_OP_VERSION_3_6_0) {
                 ret = glusterd_lock (MY_UUID);
                 if (ret) {
                         gf_log (this->name, GF_LOG_ERROR,
@@ -1612,7 +1594,7 @@ local_locking_done:
 
         /* If no volname is given as a part of the command, locks will
          * not be held */
-        if (volname || (conf->op_version < GD_OP_VERSION_4)) {
+        if (volname || (conf->op_version < GD_OP_VERSION_3_6_0)) {
                 ret = gd_lock_op_phase (conf, op, op_ctx, &op_errstr,
                                         npeers, *txn_id);
                 if (ret) {
