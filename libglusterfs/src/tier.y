@@ -107,7 +107,7 @@ ID_ITEM:           ID
 
 %%
 
-int main()
+int parse_tier()
 {
   //  yydebug=1;
   yyparse();

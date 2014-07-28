@@ -29,7 +29,7 @@ libglusterfs_la_SOURCES = dict.c xlator.c logging.c \
 	$(CONTRIBDIR)/stdlib/gf_mkostemp.c strfd.c \
 	$(CONTRIBDIR)/mount/mntent.c $(CONTRIBDIR)/libexecinfo/execinfo.c
 
-nodist_libglusterfs_la_SOURCES = y.tab.c graph.lex.c
+nodist_libglusterfs_la_SOURCES = y.tab.c graph.lex.c tier.tab.c tier.lex.c
 
 BUILT_SOURCES = graph.lex.c
 
@@ -56,7 +56,14 @@ y.tab.c: y.tab.h
 y.tab.h: graph.y
 	$(YACC) -p graphyy -d $(srcdir)/graph.y
 
-CLEANFILES = graph.lex.c y.tab.c y.tab.h
+tier.lex.c: tier.l tier.tab.h
+	$(LEX) -t $(srcdir)/tier.l > $@
+
+tier.tab.c: tier.tab.h
+tier.tab.h: tier.y
+	$(YACC) -b tier -d $(srcdir)/tier.y
+
+CLEANFILES = graph.lex.c y.tab.c y.tab.h tier.tab.c tier.tab.h tier.lex.c
 CONFIG_CLEAN_FILES = $(CONTRIB_BUILDDIR)/uuid/uuid_types.h
 
 #### UNIT TESTS #####
