@@ -17,6 +17,8 @@ typedef enum {
 
 struct _tier_group {
         tier_grouptype_t type;
+        char *name;
+        struct list_head children;
 };
 
 typedef struct _tier_group tier_group_t;

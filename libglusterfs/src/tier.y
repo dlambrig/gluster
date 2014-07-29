@@ -18,11 +18,17 @@
 %{
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <list.h> 
+#include <tier.h>
 
 int size_list=0;
 char str_list[10][30];
 
 int yylex();
+
+tier_group_t *cur_tier_group;
+
 
 void
 yyerror (char const *s)
@@ -51,6 +57,22 @@ void display_list()
   printf("\n");
 }
 
+tier_group_t *create_tier_group()
+{
+        tier_group_t *tier_group = NULL;
+        tier_group = (tier_group_t *) malloc(sizeof(tier_group_t));
+        return tier_group;
+}
+
+void set_cur_tier_group(tier_group_t *tier_group)
+{
+        cur_tier_group = tier_group;
+}
+
+tier_group_t *get_cur_tier_group()
+{
+        return cur_tier_group;
+}
 
   %}
 
@@ -62,12 +84,16 @@ GROUP:             HEADER GROUP_DESCRIPTORS TERMINATOR;
 
 HEADER :           GROUP_BEGIN ID
 {
-  printf("volume %s\n", $2);
+        tier_group_t *tier_group = NULL;
+        printf("volume %s\n", $2);
+        tier_group = create_tier_group();
+        tier_group->name = strdup($2);
+        set_cur_tier_group(tier_group);
 }
 
 TERMINATOR:        GROUP_END
 {
-  printf("end-volume\n");
+        printf("end-volume\n");
 }
 
 GROUP_DESCRIPTORS: GROUP_DESCRIPTOR | GROUP_DESCRIPTOR GROUP_DESCRIPTORS;
@@ -76,42 +102,49 @@ GROUP_DESCRIPTOR:  GROUP_INCLUDE | GROUP_OPTION | GROUP_TYPE | GROUP_SPLIT | GRO
 
 GROUP_INCLUDE:     INCLUDE ID
 {
-  printf("     include %s\n", $2);
+        printf("     include %s\n", $2);
 }
 
 GROUP_OPTION:      OPTION ID ID
 {
-  printf("     option %s %s\n", $2, $3);
+        printf("     option %s %s\n", $2, $3);
 }
 
 GROUP_TYPE:        TYPE ID
 {
-  printf("     type %s\n", $2);
+        printf("     type %s\n", $2);
 }
 
 GROUP_SPLIT:       SPLIT ID ID ID;
 
 GROUP_COMBINE:     COMBINE ID_LIST
 {
-  printf("     subvolumes ");
-  display_list();
-  init_list();
+        tier_group_t *tier_group = get_cur_tier_group();
+        tier_group->type = GF_COMBINE;
+        printf("     subvolumes ");
+        display_list();
+        init_list();
 }
 
 ID_LIST:           ID_ITEM | ID_ITEM ID_LIST;
 
 ID_ITEM:           ID
 {
-  add_list($1);
+        tier_group_t *tier_group = NULL;
+        tier_group_t *head_tier_group = NULL;
+        tier_group = create_tier_group();
+        tier_group->name = strdup($1);
+        head_tier_group = get_cur_tier_group();
+        list_add(&tier_group->children, &head_tier_group->children);
+        add_list($1);
 }
 
 %%
 
 int parse_tier()
 {
-  //  yydebug=1;
-  yyparse();
-  return 0;
+        yyparse();
+        return 0;
 }
 
 
