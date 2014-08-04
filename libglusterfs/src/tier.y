@@ -14,7 +14,6 @@
   char *strval;
 }
 
-
 %{
 #include <stdio.h>
 #include <string.h>
@@ -68,7 +67,7 @@ HEADER :           GROUP_BEGIN ID
         tier_group_t *tier_group = NULL;
         dict_t  *tier_dict = NULL;
         tier_group = create_tier_group();
-        printf("volume %x %s\n", tier_group, $2);
+        // printf("volume %x %s\n", tier_group, $2);
         tier_group->name = strdup($2);
         set_cur_tier_group(tier_group);
         tier_dict = get_tier_dict();
@@ -77,7 +76,7 @@ HEADER :           GROUP_BEGIN ID
 
 TERMINATOR:        GROUP_END
 {
-        printf("end-volume\n");
+        // printf("end-volume\n");
 }
 
 GROUP_DESCRIPTORS: GROUP_DESCRIPTOR | GROUP_DESCRIPTOR GROUP_DESCRIPTORS;
@@ -86,17 +85,17 @@ GROUP_DESCRIPTOR:  GROUP_INCLUDE | GROUP_OPTION | GROUP_TYPE | GROUP_SPLIT | GRO
 
 GROUP_INCLUDE:     INCLUDE ID
 {
-        printf("     include %s\n", $2);
+        // printf("     include %s\n", $2);
 }
 
 GROUP_OPTION:      OPTION ID ID
 {
-        printf("     option %s %s\n", $2, $3);
+        // printf("     option %s %s\n", $2, $3);
 }
 
 GROUP_TYPE:        TYPE ID
 {
-        printf("     type %s\n", $2);
+        // printf("     type %s\n", $2);
 }
 
 GROUP_SPLIT:       SPLIT ID ID ID;
@@ -105,8 +104,8 @@ GROUP_COMBINE:     COMBINE ID_LIST
 {
         tier_group_t *tier_group = get_cur_tier_group();
         tier_group->type = GF_COMBINE;
-        printf("     subvolumes ");
-        display_list();
+        // printf("     subvolumes ");
+        // display_list();
         init_list();
 }
 
@@ -125,10 +124,10 @@ ID_ITEM:           ID
                 tier_group = create_tier_group();
                 dict_add(tier_dict, strdup($1), int_to_data((int64_t)tier_group));
                 tier_group->name = strdup($1);
-                printf("not found %s\n",$1);
+                // printf("not found %s\n",$1);
         } else {
                 tier_group = (tier_group_t *) data_to_uint64(value);
-                printf("found %x\n",tier_group);
+                // printf("found %x\n",tier_group);
         }
 
         head_tier_group = get_cur_tier_group();
@@ -146,4 +145,11 @@ int parse_tier()
         return 0;
 }
 
+int parse_tier_file(char *file)
+{
+        extern FILE *yyin;
+        yyin = file;
+        yyparse();
+        return 0;
+}
 

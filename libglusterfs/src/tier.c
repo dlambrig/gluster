@@ -51,13 +51,12 @@ void init_tier()
         INIT_LIST_HEAD(&root_list.root_candidates);
 }
 
-void display_tier()
+tier_group_t *get_tier_root()
 {
-        tier_group_t *cur = NULL;
         tier_group_t *root = NULL;
+        tier_group_t *cur = NULL;
 
         if (list_empty(&root_list.root_candidates)) {
-                printf("Error - no root\n");
                 goto out;
         }
 
@@ -65,13 +64,28 @@ void display_tier()
                 if (cur == &root_list)
                       break;
                 if (root) {
-                        printf("Error - multiple roots\n");
+                        // printf("Error - multiple roots\n");
+                        root = NULL;
                         break;
                 }
 
                 root = cur;
-                printf("Display root %s\n", cur->name);
         }
+
  out:
+        return root;
+}
+
+void display_tier()
+{
+        tier_group_t *root = NULL;
+
+        root = get_tier_root();
+        if (root) {
+                printf("Display root %s\n", root->name);
+        } else {
+                printf("Error - no root\n");
+        }
+
         return;
 }

@@ -38,6 +38,7 @@
 #include "cli1-xdr.h"
 #include "syncop.h"
 #include "store.h"
+#include "tier.h"
 
 #define GLUSTERD_TR_LOG_SIZE            50
 #define GLUSTERD_NAME                   "glusterd"
@@ -305,7 +306,8 @@ struct glusterd_volinfo_ {
         gf_lock_t                 lock;
         gf_boolean_t              is_snap_volume;
         glusterd_snap_t          *snapshot;
-        uuid_t                    restored_from_snap;
+        uuid_t                    restored_from_snap; 
+        tier_group_t             *tier_info;
         char                      parent_volname[GD_VOLUME_NAME_MAX];
                                          /* In case of a snap volume
                                             i.e (is_snap_volume == TRUE) this

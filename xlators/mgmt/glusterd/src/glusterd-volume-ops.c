@@ -1615,9 +1615,6 @@ glusterd_op_create_volume (dict_t *dict, char **op_errstr)
                 goto out;
         }
 
-        ret = dict_get_str (dict, "template-file", &template_file);
-        gf_log (this->name, GF_LOG_INFO, "template file %s", template_file);
-
         ret = dict_get_str (dict, "volname", &volname);
 
         if (ret) {
@@ -1714,6 +1711,17 @@ glusterd_op_create_volume (dict_t *dict, char **op_errstr)
                         ret = -1;
                         goto out;
                 }
+        } else if (GF_GLUSTER_TYPE_TEMPLATE == volinfo->type) {
+                ret = dict_get_str (dict, "template-file", &template_file);
+                if (ret) {
+                        goto out;
+                }
+                gf_log (this->name, GF_LOG_INFO, "template file %s", template_file);
+                ret = parse_tier_file(template_file);
+                if (ret) {
+                        goto out;
+                }
+                volinfo->tier_info = get_tier_root();
         }
 
         /* dist-leaf-count is the count of brick nodes for a given

@@ -10,6 +10,8 @@
 
 #ifndef _TIER_H
 
+extern int parse_tier_file(char *file);
+
 typedef enum {
         GF_COMBINE = 1,
         GF_SPLIT   = 2
@@ -25,6 +27,7 @@ struct _tier_group {
 
 typedef struct _tier_group tier_group_t;
 
+
 tier_group_t *cur_tier_group;
 dict_t *cur_tier_dict;
 tier_group_t root_list;
@@ -38,6 +41,8 @@ dict_t *get_tier_dict();
 void init_tier();
 
 void display_tier();
+
+tier_group_t *get_tier_root();
 
 tier_group_t *create_tier_group();
 
