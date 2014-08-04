@@ -19,16 +19,14 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <list.h> 
+#include <list.h>
+#include <dict.h> 
 #include <tier.h>
 
 int size_list=0;
 char str_list[10][30];
 
 int yylex();
-
-tier_group_t *cur_tier_group;
-
 
 void
 yyerror (char const *s)
@@ -57,23 +55,6 @@ void display_list()
   printf("\n");
 }
 
-tier_group_t *create_tier_group()
-{
-        tier_group_t *tier_group = NULL;
-        tier_group = (tier_group_t *) malloc(sizeof(tier_group_t));
-        return tier_group;
-}
-
-void set_cur_tier_group(tier_group_t *tier_group)
-{
-        cur_tier_group = tier_group;
-}
-
-tier_group_t *get_cur_tier_group()
-{
-        return cur_tier_group;
-}
-
   %}
 
 %%
@@ -85,10 +66,13 @@ GROUP:             HEADER GROUP_DESCRIPTORS TERMINATOR;
 HEADER :           GROUP_BEGIN ID
 {
         tier_group_t *tier_group = NULL;
-        printf("volume %s\n", $2);
+        dict_t  *tier_dict = NULL;
         tier_group = create_tier_group();
+        printf("volume %x %s\n", tier_group, $2);
         tier_group->name = strdup($2);
         set_cur_tier_group(tier_group);
+        tier_dict = get_tier_dict();
+        dict_add(tier_dict, tier_group->name, int_to_data((int64_t)tier_group));
 }
 
 TERMINATOR:        GROUP_END
@@ -132,9 +116,24 @@ ID_ITEM:           ID
 {
         tier_group_t *tier_group = NULL;
         tier_group_t *head_tier_group = NULL;
-        tier_group = create_tier_group();
-        tier_group->name = strdup($1);
+        data_t *value = NULL;
+        dict_t *tier_dict = NULL;
+
+        tier_dict = get_tier_dict();
+        value = dict_get(tier_dict, $1);
+        if (value == NULL) {
+                tier_group = create_tier_group();
+                dict_add(tier_dict, strdup($1), int_to_data((int64_t)tier_group));
+                tier_group->name = strdup($1);
+                printf("not found %s\n",$1);
+        } else {
+                tier_group = (tier_group_t *) data_to_uint64(value);
+                printf("found %x\n",tier_group);
+        }
+
         head_tier_group = get_cur_tier_group();
+        tier_group->parent = head_tier_group;
+        list_del(&tier_group->root_candidates); 
         list_add(&tier_group->children, &head_tier_group->children);
         add_list($1);
 }

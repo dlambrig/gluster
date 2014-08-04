@@ -270,7 +270,8 @@ cli_cmd_volume_create_parse (struct cli_state *state, const char **words,
         int32_t index = 0;
         char    *bricks = NULL;
         int32_t brick_count = 0;
-        char    *opwords[] = { "replica", "stripe", "transport", "disperse",
+        char    *template_file = NULL;
+        char    *opwords[] = { "template", "replica", "stripe", "transport", "disperse",
                                "redundancy", NULL };
 
         char    *invalid_volnames[] = {"volume", "type", "subvolumes", "option",
@@ -350,6 +351,14 @@ cli_cmd_volume_create_parse (struct cli_state *state, const char **words,
                 w = str_getunamb (words[index], opwords);
                 if (!w) {
                         break;
+                } else if ((strcmp (w, "template")) == 0) {
+                        template_file = words[index + 1];
+                        ret = dict_set_str(dict, "template-file", template_file);
+                        if (ret)
+                                goto out;
+                        type = GF_GLUSTER_TYPE_TEMPLATE;
+                        index += 2;
+                        goto template_out;
                 } else if ((strcmp (w, "replica")) == 0) {
                         switch (type) {
                         case GF_CLUSTER_TYPE_STRIPE_REPLICATE:
@@ -530,6 +539,7 @@ cli_cmd_volume_create_parse (struct cli_state *state, const char **words,
                 }
                 op_count++;
         }
+ template_out:
 
         if (!trans_type)
                 trans_type = gf_strdup ("tcp");
@@ -596,6 +606,7 @@ cli_cmd_volume_create_parse (struct cli_state *state, const char **words,
                 ret = -1;
                 goto out;
         }
+
 
         /* Everything is parsed fine. start setting info in dict */
         ret = dict_set_str (dict, "volname", volname);

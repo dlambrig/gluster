@@ -19,8 +19,28 @@ struct _tier_group {
         tier_grouptype_t type;
         char *name;
         struct list_head children;
+        struct list_head root_candidates;
+        struct _tier_group *parent;
 };
 
 typedef struct _tier_group tier_group_t;
+
+tier_group_t *cur_tier_group;
+dict_t *cur_tier_dict;
+tier_group_t root_list;
+
+void set_cur_tier_group(tier_group_t *tier_group);
+
+void set_cur_tier_dict();
+
+dict_t *get_tier_dict();
+
+void init_tier();
+
+void display_tier();
+
+tier_group_t *create_tier_group();
+
+tier_group_t *get_cur_tier_group();
 
 #endif /* _TIER_H */

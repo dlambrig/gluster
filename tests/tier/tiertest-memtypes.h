@@ -15,6 +15,7 @@
 #define TIERTEST_MEM_TYPE_START (gf_common_mt_end + 1)
 
 enum teirtest_mem_types_ {
+        tiertest_mt_call_pool_t,
         tiertest_mt_end = TIERTEST_MEM_TYPE_START
 };
 

@@ -3,6 +3,8 @@
 #include <tiertest.h>
 #include <globals.h>
 #include <tiertest-memtypes.h>
+#include <call-stub.h>
+
 /*
 glusterd_op_create_volume
   volname
@@ -35,14 +37,14 @@ glusterfs_ctx_defaults_init (glusterfs_ctx_t *ctx)
         if (!ctx->iobuf_pool)
                 return -1;
 
-        ctx->event_pool = event_pool_new (DEFAULT_EVENT_POOL_SIZE);
+        ctx->event_pool = (void *) event_pool_new (DEFAULT_EVENT_POOL_SIZE);
         if (!ctx->event_pool)
                 return -1;
 
         pool = GF_CALLOC (1, sizeof (call_pool_t),
-                          cli_mt_call_pool_t);
+                          tiertest_mt_call_pool_t);
         if (!pool)
-                return -1;
+                return -1; 
 
         /* frame_mem_pool size 112 * 64 */
         pool->frame_mem_pool = mem_pool_new (call_frame_t, 32);
@@ -103,6 +105,10 @@ int main()
         if (ret)
                 return ret;
 
+        init_tier();
+
         parse_tier();
+
+        display_tier();
         
 }

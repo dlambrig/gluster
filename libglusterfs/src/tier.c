@@ -24,6 +24,8 @@ tier_group_t *create_tier_group()
         tier_group_t *tier_group = NULL;
         tier_group = (tier_group_t *) malloc(sizeof(tier_group_t));
         INIT_LIST_HEAD(&tier_group->children);
+        INIT_LIST_HEAD(&tier_group->root_candidates);
+        list_add(&tier_group->root_candidates, &root_list.root_candidates);
         return tier_group;
 }
 
@@ -37,12 +39,39 @@ tier_group_t *get_cur_tier_group()
         return cur_tier_group;
 }
 
+
 dict_t *get_tier_dict()
 {
         return cur_tier_dict;
 }
 
+void init_tier()
+{
+        set_cur_tier_dict();
+        INIT_LIST_HEAD(&root_list.root_candidates);
+}
+
 void display_tier()
 {
-        printf("Display!\n");
+        tier_group_t *cur = NULL;
+        tier_group_t *root = NULL;
+
+        if (list_empty(&root_list.root_candidates)) {
+                printf("Error - no root\n");
+                goto out;
+        }
+
+        list_for_each_entry(cur, &root_list.root_candidates, root_candidates) {
+                if (cur == &root_list)
+                      break;
+                if (root) {
+                        printf("Error - multiple roots\n");
+                        break;
+                }
+
+                root = cur;
+                printf("Display root %s\n", cur->name);
+        }
+ out:
+        return;
 }
