@@ -1599,6 +1599,7 @@ glusterd_op_create_volume (dict_t *dict, char **op_errstr)
         char                  msg[1024] __attribute__((unused)) = {0, };
         char                 *brick_mount_dir = NULL;
         char                  key[PATH_MAX]   = "";
+        char                 *template_file = NULL;
 
         this = THIS;
         GF_ASSERT (this);
@@ -1613,6 +1614,9 @@ glusterd_op_create_volume (dict_t *dict, char **op_errstr)
                         "Unable to allocate memory for volinfo");
                 goto out;
         }
+
+        ret = dict_get_str (dict, "template-file", &template_file);
+        gf_log (this->name, GF_LOG_INFO, "template file %s", template_file);
 
         ret = dict_get_str (dict, "volname", &volname);
 
