@@ -1711,7 +1711,7 @@ glusterd_op_create_volume (dict_t *dict, char **op_errstr)
                         ret = -1;
                         goto out;
                 }
-        } else if (GF_GLUSTER_TYPE_TEMPLATE == volinfo->type) {
+        } else if (GF_CLUSTER_TYPE_TIER == volinfo->type) {
                 ret = dict_get_str (dict, "template-file", &template_file);
                 if (ret) {
                         goto out;

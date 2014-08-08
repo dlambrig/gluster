@@ -356,7 +356,7 @@ cli_cmd_volume_create_parse (struct cli_state *state, const char **words,
                         ret = dict_set_str(dict, "template-file", template_file);
                         if (ret)
                                 goto out;
-                        type = GF_GLUSTER_TYPE_TEMPLATE;
+                        type = GF_CLUSTER_TYPE_TIER;
                         index += 2;
                         goto template_out;
                 } else if ((strcmp (w, "replica")) == 0) {

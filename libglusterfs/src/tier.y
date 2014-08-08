@@ -67,7 +67,7 @@ HEADER :           GROUP_BEGIN ID
         tier_group_t *tier_group = NULL;
         dict_t  *tier_dict = NULL;
         tier_group = create_tier_group();
-        // printf("volume %x %s\n", tier_group, $2);
+        gf_log("glusterd",GF_LOG_INFO,"volume %x %s", tier_group, $2);
         tier_group->name = strdup($2);
         set_cur_tier_group(tier_group);
         tier_dict = get_tier_dict();
@@ -76,7 +76,7 @@ HEADER :           GROUP_BEGIN ID
 
 TERMINATOR:        GROUP_END
 {
-        // printf("end-volume\n");
+        gf_log("glusterd",GF_LOG_INFO,"end-volume");
 }
 
 GROUP_DESCRIPTORS: GROUP_DESCRIPTOR | GROUP_DESCRIPTOR GROUP_DESCRIPTORS;
@@ -85,17 +85,17 @@ GROUP_DESCRIPTOR:  GROUP_INCLUDE | GROUP_OPTION | GROUP_TYPE | GROUP_SPLIT | GRO
 
 GROUP_INCLUDE:     INCLUDE ID
 {
-        // printf("     include %s\n", $2);
+        gf_log("glusterd",GF_LOG_INFO,"     include %s", $2);
 }
 
 GROUP_OPTION:      OPTION ID ID
 {
-        // printf("     option %s %s\n", $2, $3);
+        gf_log("glusterd",GF_LOG_INFO,"     option %s %s", $2, $3);
 }
 
 GROUP_TYPE:        TYPE ID
 {
-        // printf("     type %s\n", $2);
+        gf_log("glusterd",GF_LOG_INFO,"     type %s", $2);
 }
 
 GROUP_SPLIT:       SPLIT ID ID ID;
@@ -104,12 +104,12 @@ GROUP_COMBINE:     COMBINE ID_LIST
 {
         tier_group_t *tier_group = get_cur_tier_group();
         tier_group->type = GF_COMBINE;
-        // printf("     subvolumes ");
+        gf_log("glusterd",GF_LOG_INFO,"     subvolumes ");
         // display_list();
         init_list();
 }
 
-ID_LIST:           ID_ITEM | ID_ITEM ID_LIST;
+ID_LIST:           ID_ITEM | ID_ITEM COMMA ID_LIST;
 
 ID_ITEM:           ID
 {
@@ -124,10 +124,10 @@ ID_ITEM:           ID
                 tier_group = create_tier_group();
                 dict_add(tier_dict, strdup($1), int_to_data((int64_t)tier_group));
                 tier_group->name = strdup($1);
-                // printf("not found %s\n",$1);
+                gf_log("glusterd",GF_LOG_INFO,"not found %s",$1);
         } else {
                 tier_group = (tier_group_t *) data_to_uint64(value);
-                // printf("found %x\n",tier_group);
+                gf_log("glusterd",GF_LOG_INFO,"found %x",tier_group);
         }
 
         head_tier_group = get_cur_tier_group();
@@ -148,7 +148,11 @@ int parse_tier()
 int parse_tier_file(char *file)
 {
         extern FILE *yyin;
-        yyin = file;
+        init_tier();
+        yyin = fopen(file, "r");
+        if (!yyin)
+                return errno;
+
         yyparse();
         return 0;
 }

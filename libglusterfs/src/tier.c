@@ -64,7 +64,7 @@ tier_group_t *get_tier_root()
                 if (cur == &root_list)
                       break;
                 if (root) {
-                        // printf("Error - multiple roots\n");
+                        gf_log("glusterd",GF_LOG_INFO,"Error - multiple roots\n");
                         root = NULL;
                         break;
                 }

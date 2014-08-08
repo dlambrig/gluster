@@ -2446,6 +2446,51 @@ volgen_graph_build_clusters (volgen_graph_t *graph,
                 ret = volgen_xlator_link (xl, trav);
                 if (ret)
                         goto out;
+                
+                if (trav == txl)
+                        break;
+
+                i++;
+        }
+
+        ret = j;
+out:
+        return ret;
+}
+
+static int
+volgen_graph_build_tier (volgen_graph_t *graph,
+                             glusterd_volinfo_t *volinfo, char *xl_type,
+                             char *xl_namefmt, size_t child_count,
+                             size_t sub_count)
+{
+        int             i = 0;
+        int             j = 0;
+        xlator_t        *txl = NULL;
+        xlator_t        *xl  = NULL;
+        xlator_t        *trav = NULL;
+        char            *volname = NULL;
+        int             ret     = -1;
+
+        if (child_count == 0)
+                goto out;
+        volname = volinfo->volname;
+        txl = first_of (graph);
+        for (trav = txl; --child_count; trav = trav->next);
+        for (;; trav = trav->prev) {
+                if ((i % sub_count) == 0) {
+                        xl = volgen_graph_add_nolink (graph, xl_type,
+                                                      xl_namefmt, volname, j);
+                        if (!xl) {
+                                ret = -1;
+                                goto out;
+                        }
+                        j++;
+                }
+
+                ret = volgen_xlator_link (xl, trav);
+                if (ret)
+                        goto out;
 
                 if (trav == txl)
                         break;
@@ -2686,6 +2731,8 @@ volume_volgen_graph_build_clusters (volgen_graph_t *graph,
                                                        "%s-stripe-%d"};
         char                    *disperse_args[]    = {"cluster/disperse",
                                                        "%s-disperse-%d"};
+        char                    *tier_args[]        = {"cluster/tier",
+                                                       "%s-tier-%d"};
         char                    option[32]          = "";
         int                     rclusters           = 0;
         int                     clusters            = 0;
@@ -2714,6 +2761,15 @@ volume_volgen_graph_build_clusters (volgen_graph_t *graph,
                 clusters = volgen_graph_build_clusters (graph, volinfo,
                                                         stripe_args[0],
                                                         stripe_args[1],
+                                                        volinfo->brick_count,
+                                                        volinfo->stripe_count);
+                if (clusters < 0)
+                        goto out;
+                break;
+        case GF_CLUSTER_TYPE_TIER:
+                clusters = volgen_graph_build_tier (graph, volinfo,
+                                                        tier_args[0],
+                                                        tier_args[1],
                                                         volinfo->brick_count,
                                                         volinfo->stripe_count);
                 if (clusters < 0)

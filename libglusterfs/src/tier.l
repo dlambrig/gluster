@@ -53,7 +53,7 @@ COMMA                  [,]
                        return STRING_TOK;
        }
 }
-[^ \t\r\n\"\\]+ {    yylval.strval = strdup (yytext) ; return ID; }
+[^ ,\t\r\n\"\\]+ {    yylval.strval = strdup (yytext) ; return ID; }
 [ \t\r\n]+             ;
 %%
 
