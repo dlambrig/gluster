@@ -14,13 +14,17 @@ extern int parse_tier_file(char *file);
 
 typedef enum {
         GF_COMBINE = 1,
-        GF_SPLIT   = 2
+        GF_SPLIT   = 2,
+        GF_BRICK   = 3
 } tier_grouptype_t;
 
 struct _tier_group {
-        tier_grouptype_t type;
-        char *name;
-        struct list_head children;
+        xlator_t         *xl;
+        tier_grouptype_t group_type;
+        char             *name;
+        char             *type;
+        struct list_head siblings;
+        struct list_head children_head;
         struct list_head root_candidates;
         struct _tier_group *parent;
 };

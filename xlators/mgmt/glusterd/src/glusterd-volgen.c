@@ -2460,46 +2460,37 @@ out:
 
 static int
 volgen_graph_build_tier (volgen_graph_t *graph,
-                             glusterd_volinfo_t *volinfo, char *xl_type,
-                             char *xl_namefmt, size_t child_count,
-                             size_t sub_count)
+                         glusterd_volinfo_t *volinfo,
+                         char *xl_namefmt, size_t child_count,
+                         size_t sub_count,
+                         tier_group_t *node,
+                         xlator_t **txl)
+
 {
         int             i = 0;
         int             j = 0;
-        xlator_t        *txl = NULL;
-        xlator_t        *xl  = NULL;
         xlator_t        *trav = NULL;
         char            *volname = NULL;
         int             ret     = -1;
+        tier_group_t    *child = NULL;
 
-        if (child_count == 0)
-                goto out;
-        volname = volinfo->volname;
-        txl = first_of (graph);
-        for (trav = txl; --child_count; trav = trav->next);
-        for (;; trav = trav->prev) {
-                if ((i % sub_count) == 0) {
-                        xl = volgen_graph_add_nolink (graph, xl_type,
-                                                      xl_namefmt, volname, j);
-                        if (!xl) {
-                                ret = -1;
-                                goto out;
-                        }
-                        j++;
-                }
-
-                ret = volgen_xlator_link (xl, trav);
-                if (ret)
-                        goto out;
-
-                if (trav == txl)
-                        break;
-
-                i++;
+        if (node->group_type == GF_BRICK) {
+                node->xl = *txl;
+                *txl= (*txl)->prev;
+                return 0;
         }
 
-        ret = j;
-out:
+        list_for_each_entry(child, &node->children_head, siblings) {
+                ret = volgen_graph_build_tier(graph, volinfo, xl_namefmt, child_count, sub_count, child, txl );
+        }
+
+        node->xl = volgen_graph_add_nolink (graph, node->type,
+                                      xl_namefmt, volname, j);
+        
+        list_for_each_entry(child, &node->children_head, siblings) {
+                ret = volgen_xlator_link (node->xl, child->xl);
+        }
+
         return ret;
 }
 
@@ -2738,7 +2729,9 @@ volume_volgen_graph_build_clusters (volgen_graph_t *graph,
         int                     clusters            = 0;
         int                     dist_count          = 0;
         int                     ret                 = -1;
+        int                     children            = 0;
         xlator_t *              ec                  = NULL;
+        xlator_t *              client              = NULL;
 
         if (!volinfo->dist_leaf_count)
                 goto out;
@@ -2767,11 +2760,14 @@ volume_volgen_graph_build_clusters (volgen_graph_t *graph,
                         goto out;
                 break;
         case GF_CLUSTER_TYPE_TIER:
+                children = volinfo->brick_count;
+                for (client = first_of(graph); --children; client = client->next);
                 clusters = volgen_graph_build_tier (graph, volinfo,
-                                                        tier_args[0],
-                                                        tier_args[1],
-                                                        volinfo->brick_count,
-                                                        volinfo->stripe_count);
+                                                    tier_args[1],
+                                                    volinfo->brick_count,
+                                                    volinfo->stripe_count,
+                                                    get_tier_root(volinfo->tier_info),
+                                                    &client);
                 if (clusters < 0)
                         goto out;
                 break;

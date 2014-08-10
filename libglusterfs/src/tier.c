@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <list.h>
 #include <dict.h> 
+#include <xlator.h>
 #include <tier.h>
 
 void set_cur_tier_group(tier_group_t *tier_group)
@@ -23,7 +24,8 @@ tier_group_t *create_tier_group()
 {
         tier_group_t *tier_group = NULL;
         tier_group = (tier_group_t *) malloc(sizeof(tier_group_t));
-        INIT_LIST_HEAD(&tier_group->children);
+        INIT_LIST_HEAD(&tier_group->siblings);
+        INIT_LIST_HEAD(&tier_group->children_head);
         INIT_LIST_HEAD(&tier_group->root_candidates);
         list_add(&tier_group->root_candidates, &root_list.root_candidates);
         return tier_group;

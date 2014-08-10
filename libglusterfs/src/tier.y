@@ -19,6 +19,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <list.h>
+#include <xlator.h>
 #include <dict.h> 
 #include <tier.h>
 
@@ -85,7 +86,9 @@ GROUP_DESCRIPTOR:  GROUP_INCLUDE | GROUP_OPTION | GROUP_TYPE | GROUP_SPLIT | GRO
 
 GROUP_INCLUDE:     INCLUDE ID
 {
+        tier_group_t *tier_group = get_cur_tier_group();
         gf_log("glusterd",GF_LOG_INFO,"     include %s", $2);
+        tier_group->group_type = GF_BRICK;
 }
 
 GROUP_OPTION:      OPTION ID ID
@@ -95,7 +98,9 @@ GROUP_OPTION:      OPTION ID ID
 
 GROUP_TYPE:        TYPE ID
 {
+        tier_group_t *tier_group = get_cur_tier_group();
         gf_log("glusterd",GF_LOG_INFO,"     type %s", $2);
+        tier_group->type = strdup($2);
 }
 
 GROUP_SPLIT:       SPLIT ID ID ID;
@@ -103,7 +108,7 @@ GROUP_SPLIT:       SPLIT ID ID ID;
 GROUP_COMBINE:     COMBINE ID_LIST
 {
         tier_group_t *tier_group = get_cur_tier_group();
-        tier_group->type = GF_COMBINE;
+        tier_group->group_type = GF_COMBINE;
         gf_log("glusterd",GF_LOG_INFO,"     subvolumes ");
         // display_list();
         init_list();
@@ -119,6 +124,8 @@ ID_ITEM:           ID
         dict_t *tier_dict = NULL;
 
         tier_dict = get_tier_dict();
+        head_tier_group = get_cur_tier_group();
+
         value = dict_get(tier_dict, $1);
         if (value == NULL) {
                 tier_group = create_tier_group();
@@ -127,14 +134,13 @@ ID_ITEM:           ID
                 gf_log("glusterd",GF_LOG_INFO,"not found %s",$1);
         } else {
                 tier_group = (tier_group_t *) data_to_uint64(value);
-                gf_log("glusterd",GF_LOG_INFO,"found %x",tier_group);
+                gf_log("glusterd",GF_LOG_INFO,"found %x cur %x",tier_group, head_tier_group);
         }
 
-        head_tier_group = get_cur_tier_group();
         tier_group->parent = head_tier_group;
         list_del(&tier_group->root_candidates); 
-        list_add(&tier_group->children, &head_tier_group->children);
-        add_list($1);
+        list_add(&tier_group->siblings, &head_tier_group->children_head);
+        //        add_list($1);
 }
 
 %%
