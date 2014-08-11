@@ -34,26 +34,6 @@ yyerror (char const *s)
   fprintf (stderr, "%s\n", s);
 }
 
-void init_list()
-{
-  size_list = 0;
-}
-
-void add_list(char *item)
-{
-  strcpy(str_list[size_list], item);
-  size_list++;
-}
-
-void display_list()
-{
-  int i=0;
- 
-  for (i=0; i<size_list; i++) 
-    printf("%s ",str_list[i]);
-
-  printf("\n");
-}
 
   %}
 
@@ -92,8 +72,10 @@ GROUP_INCLUDE:     INCLUDE ID
 }
 
 GROUP_OPTION:      OPTION ID ID
-{
+{        
+        tier_group_t *tier_group = get_cur_tier_group();
         gf_log("glusterd",GF_LOG_INFO,"     option %s %s", $2, $3);
+        dict_add(tier_group->options, $2, str_to_data($3));
 }
 
 GROUP_TYPE:        TYPE ID
@@ -110,8 +92,6 @@ GROUP_COMBINE:     COMBINE ID_LIST
         tier_group_t *tier_group = get_cur_tier_group();
         tier_group->group_type = GF_COMBINE;
         gf_log("glusterd",GF_LOG_INFO,"     subvolumes ");
-        // display_list();
-        init_list();
 }
 
 ID_LIST:           ID_ITEM | ID_ITEM COMMA ID_LIST;
@@ -140,7 +120,6 @@ ID_ITEM:           ID
         tier_group->parent = head_tier_group;
         list_del(&tier_group->root_candidates); 
         list_add(&tier_group->siblings, &head_tier_group->children_head);
-        //        add_list($1);
 }
 
 %%

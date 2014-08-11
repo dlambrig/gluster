@@ -23,6 +23,7 @@ struct _tier_group {
         tier_grouptype_t group_type;
         char             *name;
         char             *type;
+        dict_t           *options;
         struct list_head siblings;
         struct list_head children_head;
         struct list_head root_candidates;

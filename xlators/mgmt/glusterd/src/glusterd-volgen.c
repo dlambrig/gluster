@@ -2459,9 +2459,23 @@ out:
 }
 
 static int
+_set_node_opt(dict_t *dict,
+              char *key,
+              data_t *value,
+              void *data)
+{
+        tier_group_t *node = data;
+        int ret = 0;
+
+        ret = xlator_set_option(node->xl, key, data_to_str(value));
+
+        return ret;
+}
+
+static int
 volgen_graph_build_tier (volgen_graph_t *graph,
                          glusterd_volinfo_t *volinfo,
-                         char *xl_namefmt, size_t child_count,
+                         size_t child_count,
                          size_t sub_count,
                          tier_group_t *node,
                          xlator_t **txl)
@@ -2469,10 +2483,9 @@ volgen_graph_build_tier (volgen_graph_t *graph,
 {
         int             i = 0;
         int             j = 0;
-        xlator_t        *trav = NULL;
-        char            *volname = NULL;
+        xlator_t        *trav   = NULL;
         int             ret     = -1;
-        tier_group_t    *child = NULL;
+        tier_group_t    *child  = NULL;
 
         if (node->group_type == GF_BRICK) {
                 node->xl = *txl;
@@ -2481,11 +2494,13 @@ volgen_graph_build_tier (volgen_graph_t *graph,
         }
 
         list_for_each_entry(child, &node->children_head, siblings) {
-                ret = volgen_graph_build_tier(graph, volinfo, xl_namefmt, child_count, sub_count, child, txl );
+                ret = volgen_graph_build_tier(graph, volinfo, child_count, sub_count, child, txl );
         }
 
         node->xl = volgen_graph_add_nolink (graph, node->type,
-                                      xl_namefmt, volname, j);
+                                            "%s", node->name, j);
+
+        dict_foreach(node->options, _set_node_opt, node);
         
         list_for_each_entry(child, &node->children_head, siblings) {
                 ret = volgen_xlator_link (node->xl, child->xl);
@@ -2762,14 +2777,13 @@ volume_volgen_graph_build_clusters (volgen_graph_t *graph,
         case GF_CLUSTER_TYPE_TIER:
                 children = volinfo->brick_count;
                 for (client = first_of(graph); --children; client = client->next);
-                clusters = volgen_graph_build_tier (graph, volinfo,
-                                                    tier_args[1],
-                                                    volinfo->brick_count,
-                                                    volinfo->stripe_count,
-                                                    get_tier_root(volinfo->tier_info),
-                                                    &client);
-                if (clusters < 0)
-                        goto out;
+                ret = volgen_graph_build_tier (graph, volinfo,
+                                               volinfo->brick_count,
+                                               volinfo->stripe_count,
+                                               get_tier_root(volinfo->tier_info),
+                                               &client);
+                goto out;
+
                 break;
         case GF_CLUSTER_TYPE_STRIPE_REPLICATE:
                 /* Replicate after the clients, then stripe */

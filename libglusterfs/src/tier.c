@@ -28,6 +28,7 @@ tier_group_t *create_tier_group()
         INIT_LIST_HEAD(&tier_group->children_head);
         INIT_LIST_HEAD(&tier_group->root_candidates);
         list_add(&tier_group->root_candidates, &root_list.root_candidates);
+        tier_group->options = get_new_dict();
         return tier_group;
 }
 
@@ -44,6 +45,7 @@ tier_group_t *get_cur_tier_group()
 
 dict_t *get_tier_dict()
 {
+
         return cur_tier_dict;
 }
 
