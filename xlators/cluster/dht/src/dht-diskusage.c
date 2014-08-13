@@ -135,6 +135,7 @@ dht_get_du_info_for_subvol (xlator_t *this, int subvol_idx)
         tmp_loc.gfid[15] = 1;
 
 	statfs_local->call_cnt = 1;
+        
 	STACK_WIND (statfs_frame, dht_du_info_cbk,
 		    conf->subvolumes[subvol_idx],
 		    conf->subvolumes[subvol_idx]->fops->statfs,

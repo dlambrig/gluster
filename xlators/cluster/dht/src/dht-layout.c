@@ -19,8 +19,7 @@
 #include "dht-common.h"
 #include "byte-order.h"
 #include "dht-messages.h"
-
-
+#include "libxlator.h"
 #define layout_base_size (sizeof (dht_layout_t))
 
 #define layout_entry_size (sizeof ((dht_layout_t *)NULL)->list[0])
@@ -168,7 +167,6 @@ dht_layout_ref (xlator_t *this, dht_layout_t *layout)
         return layout;
 }
 
-
 xlator_t *
 dht_layout_search (xlator_t *this, dht_layout_t *layout, const char *name)
 {
@@ -176,7 +174,12 @@ dht_layout_search (xlator_t *this, dht_layout_t *layout, const char *name)
         xlator_t  *subvol = NULL;
         int        i = 0;
         int        ret = 0;
+        void      *value;
 
+        ret = dict_get_ptr (this->options, "rule", &value);
+        if (!ret) {
+                gf_log(this->name, GF_LOG_INFO, "rule %s on name %s", (char *)value, name);
+        }
 
         ret = dht_hash_compute (this, layout->type, name, &hash);
         if (ret != 0) {
@@ -679,7 +682,7 @@ dht_layout_normalize (xlator_t *this, loc_t *loc, dht_layout_t *layout)
                         gf_log (this->name, GF_LOG_INFO,
                                 "Found anomalies in %s (gfid = %s). "
                                 "Holes=%d overlaps=%d",
-                                loc->path, gfid, holes, overlaps );
+                                loc->path, gfid, holes, overlaps);
                 }
                 ret = -1;
         }
