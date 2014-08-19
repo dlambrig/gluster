@@ -32,7 +32,6 @@ struct _tier_group {
 
 typedef struct _tier_group tier_group_t;
 
-
 tier_group_t *cur_tier_group;
 dict_t *cur_tier_dict;
 tier_group_t root_list;

@@ -56,4 +56,5 @@ group tier-1
       combine dht-set-1, dht-set-2
       type cluster/dht
       option rule *.lock
+      option xattr-name trusted.glusterfs.tier
 end-group

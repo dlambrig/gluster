@@ -175,10 +175,18 @@ dht_layout_search (xlator_t *this, dht_layout_t *layout, const char *name)
         int        i = 0;
         int        ret = 0;
         void      *value;
+        char      *match;
 
         ret = dict_get_ptr (this->options, "rule", &value);
         if (!ret) {
-                gf_log(this->name, GF_LOG_INFO, "rule %s on name %s", (char *)value, name);
+                match = (char *) value;
+                gf_log(this->name, GF_LOG_INFO, "rule %s on name %s", match, name);
+                if (!fnmatch(match, name, 0)) {
+                        subvol = layout->list[0].xlator;
+                } else {
+                        subvol = layout->list[1].xlator;
+                }
+                goto out;
         }
 
         ret = dht_hash_compute (this, layout->type, name, &hash);

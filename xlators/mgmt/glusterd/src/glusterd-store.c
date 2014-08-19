@@ -2795,6 +2795,9 @@ glusterd_store_update_volinfo (glusterd_volinfo_t *volinfo)
                                 GF_ASSERT (volinfo->disperse_count > 0);
                                 GF_ASSERT (volinfo->redundancy_count > 0);
                         break;
+                        
+                        case GF_CLUSTER_TYPE_TIER:
+                        break;
 
                         default:
                                 GF_ASSERT (0);
