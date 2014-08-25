@@ -20,6 +20,143 @@
 
 extern struct volume_options options[];
 
+
+int
+cachetier_lookup_dir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                    int op_ret, int op_errno,
+                    inode_t *inode, struct iatt *stbuf, dict_t *xattr,
+                    struct iatt *postparent)
+{
+        dht_local_t  *local                   = NULL;
+        int           this_call_cnt           = 0;
+        call_frame_t *prev                    = NULL;
+        dht_layout_t *layout                  = NULL;
+        int           ret                     = -1;
+        int           is_dir                  = 0;
+        char         gfid_local[GF_UUID_BUF_SIZE]  = {0};
+        char         gfid_node[GF_UUID_BUF_SIZE]  = {0};
+
+        GF_VALIDATE_OR_GOTO ("dht", frame, out);
+        GF_VALIDATE_OR_GOTO ("dht", this, out);
+        GF_VALIDATE_OR_GOTO ("dht", frame->local, out);
+        GF_VALIDATE_OR_GOTO ("dht", this->private, out);
+        GF_VALIDATE_OR_GOTO ("dht", cookie, out);
+
+        local = frame->local;
+        prev  = cookie;
+
+        layout = local->layout;
+
+        if (!op_ret && uuid_is_null (local->gfid))
+                memcpy (local->gfid, stbuf->ia_gfid, 16);
+
+
+        /* Check if the gfid is different for file from other node */
+        if (!op_ret && uuid_compare (local->gfid, stbuf->ia_gfid)) {
+
+                uuid_unparse(stbuf->ia_gfid, gfid_node);
+                uuid_unparse(local->gfid, gfid_local);
+
+                gf_msg (this->name, GF_LOG_WARNING, 0,
+                        DHT_MSG_GFID_MISMATCH,
+                        "%s: gfid different on %s."
+                        " gfid local = %s, gfid subvol = %s",
+                        local->loc.path, prev->this->name,
+                        gfid_local, gfid_node);
+        }
+
+        LOCK (&frame->lock);
+        {
+                /* TODO: assert equal mode on stbuf->st_mode and
+                   local->stbuf->st_mode
+
+                   else mkdir/chmod/chown and fix
+                */
+                ret = dht_layout_merge (this, layout, prev->this,
+                                        op_ret, op_errno, xattr);
+
+                if (op_ret == -1) {
+                        local->op_errno = op_errno;
+                        gf_msg_debug (this->name, 0,
+                                      "lookup of %s on %s returned error (%s)",
+                                      local->loc.path, prev->this->name,
+                                      strerror (op_errno));
+
+                        goto unlock;
+                }
+
+                is_dir = check_is_dir (inode, stbuf, xattr);
+                if (!is_dir) {
+                        gf_msg_debug (this->name, 0,
+                                      "lookup of %s on %s returned non dir 0%o",
+                                      local->loc.path, prev->this->name,
+                                      stbuf->ia_type);
+                        local->need_selfheal = 1;
+                        goto unlock;
+                }
+
+                local->op_ret = 0;
+                if (local->xattr == NULL) {
+                        local->xattr = dict_ref (xattr);
+                } else {
+                        dht_aggregate_xattr (local->xattr, xattr);
+                }
+
+                if (local->inode == NULL)
+                        local->inode = inode_ref (inode);
+
+                dht_iatt_merge (this, &local->stbuf, stbuf, prev->this);
+                dht_iatt_merge (this, &local->postparent, postparent,
+                                prev->this);
+        }
+unlock:
+        UNLOCK (&frame->lock);
+
+
+        this_call_cnt = dht_frame_return (frame);
+
+        if (is_last_call (this_call_cnt)) {
+                if (local->need_selfheal) {
+                        local->need_selfheal = 0;
+                        dht_lookup_everywhere (frame, this, &local->loc);
+                        return 0;
+                }
+
+                if (local->op_ret == 0) {
+                        ret = dht_layout_normalize (this, &local->loc, layout);
+
+                        if (ret != 0) {
+                                gf_msg_debug (this->name, 0,
+                                              "fixing assignment on %s",
+                                              local->loc.path);
+                                goto selfheal;
+                        }
+
+                        dht_layout_set (this, local->inode, layout);
+                }
+
+                if (local->loc.parent) {
+                        dht_inode_ctx_time_update (local->loc.parent, this,
+                                                   &local->postparent, 1);
+                }
+
+                DHT_STRIP_PHASE1_FLAGS (&local->stbuf);
+                DHT_STACK_UNWIND (lookup, frame, local->op_ret, local->op_errno,
+                                  local->inode, &local->stbuf, local->xattr,
+                                  &local->postparent);
+        }
+
+        return 0;
+
+selfheal:
+        FRAME_SU_DO (frame, dht_local_t);
+        uuid_copy (local->loc.gfid, local->gfid);
+        //        ret = dht_selfheal_directory (frame, dht_lookup_selfheal_cbk,
+        //                              &local->loc, layout);
+out:
+        return ret;
+}
+
 int
 cachetier_local_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                        int op_ret, int op_errno,
@@ -42,6 +179,9 @@ cachetier_local_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         prev  = cookie;
         local = frame->local;
         loc   = &local->loc;
+
+        gf_log (this->name, GF_LOG_INFO,
+                "Cache lookup callback");
 
         if (ENTRY_MISSING (op_ret, op_errno)) {
                 if (conf->search_unhashed) {
@@ -91,7 +231,7 @@ cachetier_local_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 }
 
                 for (i = 0; i < call_cnt; i++) {
-                        STACK_WIND (frame, dht_lookup_dir_cbk,
+                        STACK_WIND (frame, cachetier_lookup_dir_cbk,
                                     conf->subvolumes[i],
                                     conf->subvolumes[i]->fops->lookup,
                                     &local->loc, local->xattr_req);
@@ -173,10 +313,19 @@ cachetier_lookup (call_frame_t *frame, xlator_t *this,
                 local->xattr_req = dict_new ();
         }
 
-        hashed_subvol = dht_subvol_get_hashed (this, &local->loc);
+        hashed_subvol = dht_subvol_get_cached (this, loc->inode);
 
         local->hashed_subvol = hashed_subvol;
 
+        gf_log (this->name, GF_LOG_INFO,
+                "Cache lookup %s", loc->path);
+#if 0
+        subvol = list_entry(this->children, xlator_t, children)->next;
+        STACK_WIND (frame, cachetier_local_lookup_cbk,
+                    subvol, subvol->fops->lookup,
+                    loc, local->xattr_req);
+        goto out;
+#endif
         if (is_revalidate (loc)) {
                 layout = local->layout;
                 if (!layout) {
@@ -243,12 +392,12 @@ cachetier_lookup (call_frame_t *frame, xlator_t *this,
                 }
 
                 /* Send it to only local volume */
-                STACK_WIND (frame, cachetier_local_lookup_cbk,
+                STACK_WIND (frame, dht_lookup_cbk,
                             (xlator_t *)conf->private,
                             ((xlator_t *)conf->private)->fops->lookup,
                             loc, local->xattr_req);
         }
-
+ out:
         return 0;
 
 err:
@@ -257,6 +406,7 @@ err:
                           NULL);
         return 0;
 }
+
 
 int
 cachetier_create_linkfile_create_cbk (call_frame_t *frame, void *cookie,
@@ -310,7 +460,7 @@ cachetier_create (call_frame_t *frame, xlator_t *this,
                 goto err;
         }
 
-        subvol = dht_subvol_get_hashed (this, loc);
+        subvol = dht_subvol_get_cached (this, loc->inode);
         if (!subvol) {
                 gf_msg_debug (this->name, 0,
                               "no subvolume in layout for path=%s",
@@ -611,6 +761,7 @@ cachetier_init (xlator_t *this)
         args.this = this;
         args.volname = local_volname;
         args.addr_match = addr_match;
+#if 0
         ret = cachetier_find_local_subvol (this, cachetier_find_local_brick, &args);
         if (ret) {
                 gf_log (this->name, GF_LOG_INFO,
@@ -618,6 +769,7 @@ cachetier_init (xlator_t *this)
                         "to dht mode");
                 cachetier_to_dht (this);
         }
+#endif
         return 0;
 }
 
@@ -631,7 +783,7 @@ class_methods_t class_methods = {
 
 
 struct xlator_fops fops = {
-        .lookup      = cachetier_lookup,
+        .lookup      = dht_lookup,
         .create      = cachetier_create,
         .mknod       = cachetier_mknod,
 

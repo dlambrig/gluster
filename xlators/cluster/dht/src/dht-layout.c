@@ -174,11 +174,16 @@ dht_layout_search (xlator_t *this, dht_layout_t *layout, const char *name)
         xlator_t  *subvol = NULL;
         int        i = 0;
         int        ret = 0;
+#if 0
         void      *value;
         char      *match;
 
         ret = dict_get_ptr (this->options, "rule", &value);
         if (!ret) {
+
+                if (strcmp(name,"hot")==0)
+                        return layout->list[0].xlator;
+
                 match = (char *) value;
                 gf_log(this->name, GF_LOG_INFO, "rule %s on name %s", match, name);
                 if (!fnmatch(match, name, 0)) {
@@ -188,7 +193,7 @@ dht_layout_search (xlator_t *this, dht_layout_t *layout, const char *name)
                 }
                 goto out;
         }
-
+#endif
         ret = dht_hash_compute (this, layout->type, name, &hash);
         if (ret != 0) {
                 gf_log (this->name, GF_LOG_WARNING,
