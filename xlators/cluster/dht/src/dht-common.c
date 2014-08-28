@@ -630,6 +630,7 @@ dht_revalidate_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                         }
 
                         /* if it is ENOENT, we may have to do a
+
                          * 'lookup_everywhere()' to make sure
                          * the file is not migrated */
                         if (op_errno == ENOENT) {
@@ -647,11 +648,14 @@ dht_revalidate_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                                 " gfid = %s",
                                 (stbuf->ia_type), (local->inode->ia_type),
                                 local->loc.path, gfid);
-
+                        /* COMMENTED OUT FOR TESTING DAN */
+#if 0
                         local->op_ret = -1;
                         local->op_errno = EINVAL;
 
                         goto unlock;
+#endif
+                        /* COMMENTED OUT FOR TESTING */
                 }
 
                 layout = local->layout;
@@ -3550,6 +3554,7 @@ list:
                 }
 
                 /* Do this if conf->search_unhashed is set to "auto" */
+
                 if (conf->search_unhashed == GF_DHT_LOOKUP_UNHASHED_AUTO) {
                         subvol = dht_layout_search (this, layout,
                                                     orig_entry->d_name);
@@ -3817,10 +3822,10 @@ dht_do_readdir (call_frame_t *frame, xlator_t *this, fd_t *fd, size_t size,
                 }
 
                 STACK_WIND (frame, dht_readdirp_cbk, xvol, xvol->fops->readdirp,
-                            fd, size, xoff, local->xattr);
+                            fd, size, yoff, local->xattr);  // DAN
         } else {
                 STACK_WIND (frame, dht_readdir_cbk, xvol, xvol->fops->readdir,
-                            fd, size, xoff, local->xattr);
+                            fd, size, xoff, local->xattr);  // DAN
         }
 
         return 0;
