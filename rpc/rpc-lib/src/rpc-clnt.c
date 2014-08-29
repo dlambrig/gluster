@@ -527,6 +527,9 @@ rpc_clnt_connection_cleanup (rpc_clnt_connection_t *conn)
                         conn->ping_started = 0;
                         rpc_clnt_unref (clnt);
                 }
+                /*reset rpc msgs stats*/
+                conn->pingcnt = 0;
+                conn->msgcnt = 0;
         }
         pthread_mutex_unlock (&conn->lock);
 
@@ -1565,6 +1568,7 @@ rpc_clnt_submit (struct rpc_clnt *rpc, rpc_clnt_prog_t *prog,
                 if ((ret >= 0) && frame) {
                         /* Save the frame in queue */
                         __save_frame (rpc, frame, rpcreq);
+                        conn->msgcnt++;
 
                         gf_log ("rpc-clnt", GF_LOG_TRACE, "submitted request "
                                 "(XID: 0x%x Program: %s, ProgVers: %d, "
@@ -1619,14 +1623,16 @@ rpc_clnt_ref (struct rpc_clnt *rpc)
 static void
 rpc_clnt_trigger_destroy (struct rpc_clnt *rpc)
 {
-        rpc_clnt_connection_t *conn = NULL;
+        rpc_clnt_connection_t  *conn  = NULL;
+        rpc_transport_t        *trans = NULL;
 
         if (!rpc)
                 return;
 
         conn = &rpc->conn;
+        trans = conn->trans;
         rpc_clnt_disable (rpc);
-        rpc_transport_unref (conn->trans);
+        rpc_transport_unref (trans);
 }
 
 static void

@@ -472,7 +472,7 @@ afr_refresh_selfheal_wrap (void *opaque)
 
 	err = afr_inode_refresh_err (frame, this);
 
-	afr_replies_wipe (local, this->private);
+        afr_local_replies_wipe (local, this->private);
 
 	local->refreshfn (frame, this, err);
 
@@ -509,7 +509,7 @@ afr_inode_refresh_done (call_frame_t *frame, xlator_t *this)
 
 	err = afr_inode_refresh_err (frame, this);
 
-	afr_replies_wipe (local, this->private);
+        afr_local_replies_wipe (local, this->private);
 
 	if (ret && afr_selfheal_enabled (this)) {
 		heal = copy_frame (frame);
@@ -588,7 +588,7 @@ afr_inode_refresh_do (call_frame_t *frame, xlator_t *this)
 	priv = this->private;
 	local = frame->local;
 
-	afr_replies_wipe (local, priv);
+        afr_local_replies_wipe (local, priv);
 
 	xdata = dict_new ();
 	if (!xdata) {
@@ -679,10 +679,13 @@ afr_lookup_xattr_req_prepare (afr_local_t *local, xlator_t *this,
 {
         int     ret = -ENOMEM;
 
-        local->xattr_req = dict_new ();
+        if (!local->xattr_req)
+                local->xattr_req = dict_new ();
+
         if (!local->xattr_req)
                 goto out;
-        if (xattr_req)
+
+        if (xattr_req != local->xattr_req)
                 dict_copy (xattr_req, local->xattr_req);
 
         ret = afr_xattr_req_prepare (this, local->xattr_req);
@@ -874,19 +877,26 @@ afr_local_transaction_cleanup (afr_local_t *local, xlator_t *this)
 
 
 void
-afr_replies_wipe (afr_local_t *local, afr_private_t *priv)
+afr_replies_wipe (struct afr_reply *replies, int count)
 {
-	int i;
+        int i = 0;
+
+        for (i = 0; i < count; i++) {
+                if (replies[i].xdata) {
+                        dict_unref (replies[i].xdata);
+                        replies[i].xdata = NULL;
+                }
+        }
+}
+
+void
+afr_local_replies_wipe (afr_local_t *local, afr_private_t *priv)
+{
 
 	if (!local->replies)
 		return;
 
-	for (i = 0; i < priv->child_count; i++) {
-		if (local->replies[i].xdata) {
-			dict_unref (local->replies[i].xdata);
-			local->replies[i].xdata = NULL;
-		}
-	}
+        afr_replies_wipe (local->replies, priv->child_count);
 
 	memset (local->replies, 0, sizeof(*local->replies) * priv->child_count);
 }
@@ -931,7 +941,7 @@ afr_local_cleanup (afr_local_t *local, xlator_t *this)
         if (local->dict)
                 dict_unref (local->dict);
 
-	afr_replies_wipe (local, priv);
+        afr_local_replies_wipe (local, priv);
 	GF_FREE(local->replies);
 
         GF_FREE (local->child_up);
@@ -1440,9 +1450,10 @@ afr_lookup_selfheal_wrap (void *opaque)
 	local = frame->local;
 	this = frame->this;
 
-	afr_selfheal_name (frame->this, local->loc.pargfid, local->loc.name);
+	afr_selfheal_name (frame->this, local->loc.pargfid, local->loc.name,
+                           &local->cont.lookup.gfid_req);
 
-	afr_replies_wipe (local, this->private);
+        afr_local_replies_wipe (local, this->private);
 
 	inode = afr_selfheal_unlocked_lookup_on (frame, local->loc.parent,
 						 local->loc.name, local->replies,
@@ -1473,6 +1484,10 @@ afr_lookup_entry_heal (call_frame_t *frame, xlator_t *this)
 	for (i = 0; i < priv->child_count; i++) {
 		if (!replies[i].valid)
 			continue;
+
+                if ((replies[i].op_ret == -1) &&
+                    (replies[i].op_errno == ENODATA))
+                        need_heal = _gf_true;
 
 		if (first == -1) {
 			first = i;
@@ -1839,8 +1854,12 @@ afr_lookup (call_frame_t *frame, xlator_t *this, loc_t *loc, dict_t *xattr_req)
         afr_local_t   *local = NULL;
         int32_t        op_errno = 0;
 	int            event = 0;
+        void          *gfid_req = NULL;
+        int            ret = 0;
 
-	if (!loc->parent) {
+	if (!loc->parent && uuid_is_null (loc->pargfid)) {
+                if (xattr_req)
+                        dict_del (xattr_req, "gfid-req");
 		afr_discover (frame, this, loc, xattr_req);
 		return 0;
 	}
@@ -1867,10 +1886,16 @@ afr_lookup (call_frame_t *frame, xlator_t *this, loc_t *loc, dict_t *xattr_req)
 
 	local->inode = inode_ref (loc->inode);
 
-	if (xattr_req)
+	if (xattr_req) {
 		/* If xattr_req was null, afr_lookup_xattr_req_prepare() will
 		   allocate one for us */
+                ret = dict_get_ptr (xattr_req, "gfid-req", &gfid_req);
+                if (ret == 0) {
+                        uuid_copy (local->cont.lookup.gfid_req, gfid_req);
+                        dict_del (xattr_req, "gfid-req");
+                }
 		local->xattr_req = dict_ref (xattr_req);
+        }
 
 	afr_read_subvol_get (loc->parent, this, NULL, &event,
 			     AFR_DATA_TRANSACTION);

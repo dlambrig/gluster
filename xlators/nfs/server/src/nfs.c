@@ -43,9 +43,7 @@
 #define OPT_SERVER_RPC_STATD_PIDFILE     "nfs.rpc-statd-pidfile"
 #define OPT_SERVER_RPC_STATD_NOTIFY_PIDFILE "nfs.rpc-statd-notify-pidfile"
 
-/* TODO: DATADIR should be based on configure's $(localstatedir) */
-#define DATADIR                         "/var/lib/glusterd"
-#define NFS_DATADIR                     DATADIR "/nfs"
+#define NFS_DATADIR                     GLUSTERD_DEFAULT_WORKDIR "/nfs"
 
 /* Forward declaration */
 int nfs_add_initer (struct list_head *list, nfs_version_initer_t init);
@@ -1534,10 +1532,10 @@ struct xlator_dumpops dumpops = {
 };
 
 /* TODO: If needed, per-volume options below can be extended to be export
-+ * specific also because after export-dir is introduced, a volume is not
-+ * neccessarily an export whereas different subdirectories within that volume
-+ * can be and may need these options to be specified separately.
-+ */
+ * specific also because after export-dir is introduced, a volume is not
+ * necessarily an export whereas different subdirectories within that volume
+ * can be and may need these options to be specified separately.
+*/
 struct volume_options options[] = {
         { .key  = {"nfs3.read-size"},
           .type = GF_OPTION_TYPE_SIZET,
@@ -1853,7 +1851,7 @@ struct volume_options options[] = {
         },
         { .key = {"nfs.mount-rmtab"},
           .type = GF_OPTION_TYPE_PATH,
-          .default_value = DATADIR "/rmtab",
+          .default_value = NFS_DATADIR "/rmtab",
           .description = "Set the location of the cache file that is used to "
                          "list all the NFS-clients that have connected "
                          "through the MOUNT protocol. If this is on shared "

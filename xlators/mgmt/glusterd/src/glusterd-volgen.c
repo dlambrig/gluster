@@ -16,11 +16,7 @@
 #include <fnmatch.h>
 #include <sys/wait.h>
 #include <dlfcn.h>
-
-#if (HAVE_LIB_XML)
-#include <libxml/encoding.h>
-#include <libxml/xmlwriter.h>
-#endif
+#include <utime.h>
 
 #include "xlator.h"
 #include "glusterd.h"
@@ -1009,6 +1005,8 @@ volgen_apply_filters (char *orig_volfile)
 free_fp:
                 GF_FREE(filterpath);
         }
+
+        closedir (filterdir);
 }
 
 static int
@@ -1936,7 +1934,7 @@ nfsperfxl_option_handler (volgen_graph_t *graph, struct volopt_map_entry *vme,
 }
 
 #if (HAVE_LIB_XML)
-static int
+int
 end_sethelp_xml_doc (xmlTextWriterPtr writer)
 {
         int             ret = -1;
@@ -1962,7 +1960,7 @@ end_sethelp_xml_doc (xmlTextWriterPtr writer)
 
 }
 
-static int
+int
 init_sethelp_xml_doc (xmlTextWriterPtr *writer, xmlBufferPtr  *buf)
 {
         int ret;
@@ -2009,7 +2007,7 @@ init_sethelp_xml_doc (xmlTextWriterPtr *writer, xmlBufferPtr  *buf)
 
 }
 
-static int
+int
 xml_add_volset_element (xmlTextWriterPtr writer, const char *name,
                                  const char *def_val, const char *dscrpt)
 {
@@ -2070,7 +2068,7 @@ xml_add_volset_element (xmlTextWriterPtr writer, const char *name,
 
 #endif
 
-static int
+int
 _get_xlator_opt_key_from_vme ( struct volopt_map_entry *vme, char **key)
 {
         int ret = 0;
@@ -2114,7 +2112,7 @@ _get_xlator_opt_key_from_vme ( struct volopt_map_entry *vme, char **key)
         return ret;
 }
 
-static void
+void
 _free_xlator_opt_key (char *key)
 {
         GF_ASSERT (key);
@@ -2126,130 +2124,6 @@ _free_xlator_opt_key (char *key)
 
         return;
 }
-
-int
-glusterd_get_volopt_content (dict_t * ctx, gf_boolean_t xml_out)
-{
-        void                    *dl_handle = NULL;
-        volume_opt_list_t        vol_opt_handle = {{0},};
-        char                    *key = NULL;
-        struct volopt_map_entry *vme = NULL;
-        int                      ret = -1;
-        char                    *def_val = NULL;
-        char                    *descr = NULL;
-        char                     output_string[51200] = {0, };
-        char                    *output = NULL;
-        char                     tmp_str[2048] = {0, };
-#if (HAVE_LIB_XML)
-        xmlTextWriterPtr         writer = NULL;
-        xmlBufferPtr             buf = NULL;
-
-        if (xml_out) {
-                ret = init_sethelp_xml_doc (&writer, &buf);
-                if (ret) /*logging done in init_xml_lib*/
-                        goto out;
-        }
-#endif
-
-        INIT_LIST_HEAD (&vol_opt_handle.list);
-
-        for (vme = &glusterd_volopt_map[0]; vme->key; vme++) {
-
-                if ((vme->type == NO_DOC) || (vme->type == GLOBAL_NO_DOC))
-                        continue;
-
-                if (vme->description) {
-                        descr = vme->description;
-                        def_val = vme->value;
-                } else {
-                        if (_get_xlator_opt_key_from_vme (vme, &key)) {
-                                gf_log ("glusterd", GF_LOG_DEBUG, "Failed to "
-                                        "get %s key from volume option entry",
-                                        vme->key);
-                                goto out; /*Some error while geting key*/
-                        }
-
-                        ret = xlator_volopt_dynload (vme->voltype,
-                                                     &dl_handle,
-                                                     &vol_opt_handle);
-
-                        if (ret) {
-                                gf_log ("glusterd", GF_LOG_DEBUG,
-                                        "xlator_volopt_dynload error(%d)", ret);
-                                ret = 0;
-                                goto cont;
-                        }
-
-                        ret = xlator_option_info_list (&vol_opt_handle, key,
-                                                       &def_val, &descr);
-                        if (ret) { /*Swallow Error i.e if option not found*/
-                                gf_log ("glusterd", GF_LOG_DEBUG,
-                                        "Failed to get option for %s key", key);
-                                ret = 0;
-                                goto cont;
-                        }
-                }
-
-                if (xml_out) {
-#if (HAVE_LIB_XML)
-                        if (xml_add_volset_element (writer,vme->key,
-                                                    def_val, descr)) {
-                                ret = -1;
-                                goto cont;
-                        }
-#else
-                        gf_log ("glusterd", GF_LOG_ERROR, "Libxml not present");
-#endif
-                } else {
-                        snprintf (tmp_str, sizeof (tmp_str), "Option: %s\nDefault "
-                                        "Value: %s\nDescription: %s\n\n",
-                                        vme->key, def_val, descr);
-                        strcat (output_string, tmp_str);
-                }
-cont:
-                if (dl_handle) {
-                        dlclose (dl_handle);
-                        dl_handle = NULL;
-                        vol_opt_handle.given_opt = NULL;
-                }
-                if (key) {
-                        _free_xlator_opt_key (key);
-                        key = NULL;
-                }
-                if (ret)
-                        goto out;
-        }
-
-#if (HAVE_LIB_XML)
-        if ((xml_out) &&
-            (ret = end_sethelp_xml_doc (writer)))
-                goto out;
-#else
-        if (xml_out)
-                gf_log ("glusterd", GF_LOG_ERROR, "Libxml not present");
-#endif
-
-        if (!xml_out)
-                output = gf_strdup (output_string);
-        else
-#if (HAVE_LIB_XML)
-                output = gf_strdup ((char *)buf->content);
-#else
-                gf_log ("glusterd", GF_LOG_ERROR, "Libxml not present");
-#endif
-
-        if (NULL == output) {
-                ret = -1;
-                goto out;
-        }
-
-        ret = dict_set_dynstr (ctx, "help-str", output);
-out:
-        gf_log ("glusterd", GF_LOG_DEBUG, "Returning %d", ret);
-        return ret;
-
-}
-
 
 static xlator_t *
 volgen_graph_build_client (volgen_graph_t *graph, glusterd_volinfo_t *volinfo,
@@ -3894,12 +3768,34 @@ get_vol_tstamp_file (char *filename, glusterd_volinfo_t *volinfo)
                  PATH_MAX - strlen(filename) - 1);
 }
 
+static void
+get_parent_vol_tstamp_file (char *filename, glusterd_volinfo_t *volinfo)
+{
+        glusterd_conf_t *priv  = NULL;
+        xlator_t        *this  = NULL;
+
+        this = THIS;
+        GF_ASSERT (this);
+        priv = this->private;
+        GF_ASSERT (priv);
+
+        snprintf (filename, PATH_MAX, "%s/vols/%s", priv->workdir,
+                  volinfo->parent_volname);
+        strncat (filename, "/marker.tstamp",
+                 PATH_MAX - strlen(filename) - 1);
+}
+
 int
 generate_brick_volfiles (glusterd_volinfo_t *volinfo)
 {
-        glusterd_brickinfo_t    *brickinfo = NULL;
-        char                     tstamp_file[PATH_MAX] = {0,};
-        int                      ret = -1;
+        glusterd_brickinfo_t    *brickinfo                    = NULL;
+        char                     tstamp_file[PATH_MAX]        = {0,};
+        char                     parent_tstamp_file[PATH_MAX] = {0,};
+        int                      ret                          = -1;
+        xlator_t                *this                         = NULL;
+
+        this = THIS;
+        GF_ASSERT (this);
 
         ret = glusterd_volinfo_get_boolean (volinfo, VKEY_MARKER_XTIME);
         if (ret == -1)
@@ -3910,29 +3806,49 @@ generate_brick_volfiles (glusterd_volinfo_t *volinfo)
         if (ret) {
                 ret = open (tstamp_file, O_WRONLY|O_CREAT|O_EXCL, 0600);
                 if (ret == -1 && errno == EEXIST) {
-                        gf_log ("", GF_LOG_DEBUG, "timestamp file exist");
+                        gf_log (this->name, GF_LOG_DEBUG,
+                                "timestamp file exist");
                         ret = -2;
                 }
                 if (ret == -1) {
-                        gf_log ("", GF_LOG_ERROR, "failed to create %s (%s)",
-                                tstamp_file, strerror (errno));
+                        gf_log (this->name, GF_LOG_ERROR, "failed to create "
+                                "%s (%s)", tstamp_file, strerror (errno));
                         return -1;
                 }
-                if (ret >= 0)
+                if (ret >= 0) {
                         close (ret);
+                        /* If snap_volume, retain timestamp for marker.tstamp
+                         * from parent. Geo-replication depends on mtime of
+                         * 'marker.tstamp' to decide the volume-mark, i.e.,
+                         * geo-rep start time just after session is created.
+                         */
+                        if (volinfo->is_snap_volume) {
+                                get_parent_vol_tstamp_file (parent_tstamp_file,
+                                                            volinfo);
+                                ret = gf_set_timestamp (parent_tstamp_file,
+                                                        tstamp_file);
+                                if (ret) {
+                                        gf_log (this->name, GF_LOG_ERROR,
+                                                "Unable to set atime and mtime"
+                                                " of %s as of %s", tstamp_file,
+                                                parent_tstamp_file);
+                                        goto out;
+                                }
+                        }
+                }
         } else {
                 ret = unlink (tstamp_file);
                 if (ret == -1 && errno == ENOENT)
                         ret = 0;
                 if (ret == -1) {
-                        gf_log ("", GF_LOG_ERROR, "failed to unlink %s (%s)",
-                                tstamp_file, strerror (errno));
+                        gf_log (this->name, GF_LOG_ERROR, "failed to unlink "
+                                "%s (%s)", tstamp_file, strerror (errno));
                         return -1;
                 }
         }
 
         list_for_each_entry (brickinfo, &volinfo->bricks, brick_list) {
-                gf_log ("", GF_LOG_DEBUG,
+                gf_log (this->name, GF_LOG_DEBUG,
                         "Found a brick - %s:%s", brickinfo->hostname,
                         brickinfo->path);
 
@@ -3945,7 +3861,7 @@ generate_brick_volfiles (glusterd_volinfo_t *volinfo)
         ret = 0;
 
 out:
-        gf_log ("", GF_LOG_DEBUG, "Returning %d", ret);
+        gf_log (this->name, GF_LOG_DEBUG, "Returning %d", ret);
         return ret;
 }
 

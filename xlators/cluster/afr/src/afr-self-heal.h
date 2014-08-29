@@ -20,7 +20,7 @@
 	afr_private_t *__priv = frame->this->private;			\
 	int __i = 0, __count = 0;					\
 									\
-	afr_replies_wipe (__local, __priv);				\
+	afr_local_replies_wipe (__local, __priv);				\
 									\
 	for (__i = 0; __i < __priv->child_count; __i++) {		\
 		if (!__priv->child_up[__i]) continue;			\
@@ -41,7 +41,7 @@
 	afr_private_t *__priv = frame->this->private;			\
 	int __i = 0, __count = 0;					\
 									\
-	afr_replies_wipe (__local, __priv);				\
+	afr_local_replies_wipe (__local, __priv);				\
 									\
 	for (__i = 0; __i < __priv->child_count; __i++) {		\
 		if (!list[__i]) continue;				\
@@ -59,7 +59,7 @@
 	afr_private_t *__priv = frame->this->private;			\
 	int __i = 0;							\
 									\
-	afr_replies_wipe (__local, __priv);				\
+	afr_local_replies_wipe (__local, __priv);				\
 									\
 	for (__i = 0; __i < __priv->child_count; __i++) {		\
 		if (!__priv->child_up[__i]) continue;			\
@@ -85,7 +85,8 @@ int
 afr_selfheal (xlator_t *this, uuid_t gfid);
 
 int
-afr_selfheal_name (xlator_t *this, uuid_t gfid, const char *name);
+afr_selfheal_name (xlator_t *this, uuid_t gfid, const char *name,
+                   void *gfid_req);
 
 int
 afr_selfheal_data (call_frame_t *frame, xlator_t *this, inode_t *inode);

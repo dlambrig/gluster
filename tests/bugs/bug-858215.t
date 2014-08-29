@@ -7,7 +7,7 @@ cleanup;
 
 ## Start and create a volume
 TEST glusterd;
-TEST pidof glusterd
+TEST pidof glusterd;
 TEST $CLI volume info;
 
 TEST $CLI volume create $V0 replica 2 stripe 2 $H0:$B0/${V0}{1,2,3,4,5,6,7,8};
@@ -39,8 +39,8 @@ TEST touch $M0/newfile;
 TEST stat $M0/newfile;
 TEST rm $M0/newfile;
 
-nfs_pid=$(cat /var/lib/glusterd/nfs/run/nfs.pid);
-glustershd_pid=$(cat /var/lib/glusterd/glustershd/run/glustershd.pid);
+nfs_pid=$(cat $GLUSTERD_WORKDIR/nfs/run/nfs.pid);
+glustershd_pid=$(cat $GLUSTERD_WORKDIR/glustershd/run/glustershd.pid);
 
 pids=$(pidof glusterfs);
 for i in $pids
@@ -62,7 +62,7 @@ TEST kill -USR1 $mount_pid;
 sleep 2;
 for file_name in $(ls $dump_dir)
 do
-    TEST grep "xlator.mount.fuse.history" $dump_dir/$file_name;
+    TEST grep -q "xlator.mount.fuse.history" $dump_dir/$file_name;
 done
 
 ## Finish up

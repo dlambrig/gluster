@@ -38,9 +38,14 @@ TEST touch $M0/$i
 chown $NEW_UID:$NEW_GID $M0/$i
 ## rename till file gets a linkfile
 
-while [ $i -ne 0 ]
+has_link=0
+while [ $i -lt 100 ]
 do
-        TEST mv $M0/$i $M0/$(( $i+1 ))
+        mv $M0/$i $M0/$(( $i+1 ))
+        if [ $? -ne 0 ]
+        then
+                break
+        fi
         let i++
         file_has_linkfile $i
         has_link=$?
@@ -50,12 +55,14 @@ do
         fi
 done
 
+TEST [ $has_link -eq 2 ]
+
 get_hashed_brick $i
 cached=$?
 
 # check if uid/gid on linkfile is created with correct uid/gid
-BACKEND_UID=`stat --printf=%u $B0/${V0}$cached/$i`;
-BACKEND_GID=`stat --printf=%g $B0/${V0}$cached/$i`;
+BACKEND_UID=`stat -c %u $B0/${V0}$cached/$i`;
+BACKEND_GID=`stat -c %g $B0/${V0}$cached/$i`;
 
 EXPECT "0" uid_gid_compare $NEW_UID $NEW_GID $BACKEND_UID $BACKEND_GID
 
@@ -72,8 +79,8 @@ TEST glusterfs --attribute-timeout=0 --entry-timeout=0 -s $H0 --volfile-id $V0 $
 lookup=`ls -l $M0/$i 2>/dev/null`
 
 # check if uid/gid on linkfile is created with correct uid/gid
-BACKEND_UID=`stat --printf=%u $B0/${V0}$cached/$i`;
-BACKEND_GID=`stat --printf=%g $B0/${V0}$cached/$i`;
+BACKEND_UID=`stat -c %u $B0/${V0}$cached/$i`;
+BACKEND_GID=`stat -c %g $B0/${V0}$cached/$i`;
 
 EXPECT "0" uid_gid_compare $NEW_UID $NEW_GID $BACKEND_UID $BACKEND_GID
 # create hardlinks. Make sure a linkfile gets created
@@ -87,10 +94,14 @@ chown $NEW_UID:$NEW_GID $M0/file;
 
 ## ln till file gets a linkfile
 
-while [ $i -ne 0 ]
+has_link=0
+while [ $i -lt 100 ]
 do
-        TEST ln $M0/file $M0/link$i
-
+        ln $M0/file $M0/link$i
+        if [ $? -ne 0 ]
+        then
+                break
+        fi
         file_has_linkfile link$i
         has_link=$?
         if [ $has_link -eq 2 ]
@@ -100,12 +111,14 @@ do
         let i++
 done
 
+TEST [ $has_link -eq 2 ]
+
 get_hashed_brick link$i
 cached=$?
 
 # check if uid/gid on linkfile is created with correct uid/gid
-BACKEND_UID=`stat --printf=%u $B0/${V0}$cached/link$i`;
-BACKEND_GID=`stat --printf=%g $B0/${V0}$cached/link$i`;
+BACKEND_UID=`stat -c %u $B0/${V0}$cached/link$i`;
+BACKEND_GID=`stat -c %g $B0/${V0}$cached/link$i`;
 
 EXPECT "0" uid_gid_compare $NEW_UID $NEW_GID $BACKEND_UID $BACKEND_GID
 
@@ -127,9 +140,14 @@ TEST `useradd -M ABC 2>/dev/null`
 TEST cd $M0
 ## rename as different user till file gets a linkfile
 
-while [ $i -ne 0 ]
+has_link=0
+while [ $i -lt 100 ]
 do
         su -c "mv $M0/user_file$i $M0/user_file$(( $i+1 ))" ABC
+        if [ $? -ne 0 ]
+        then
+                break
+        fi
         let i++
         file_has_linkfile user_file$i
         has_link=$?
@@ -139,6 +157,8 @@ do
         fi
 done
 
+TEST [ $has_link -eq 2 ]
+
 ## del user ABC
 TEST userdel ABC
 
@@ -146,8 +166,8 @@ get_hashed_brick user_file$i
 cached=$?
 
 # check if uid/gid on linkfile is created with correct uid/gid
-BACKEND_UID=`stat --printf=%u $B0/${V0}$cached/user_file$i`;
-BACKEND_GID=`stat --printf=%g $B0/${V0}$cached/user_file$i`;
+BACKEND_UID=`stat -c %u $B0/${V0}$cached/user_file$i`;
+BACKEND_GID=`stat -c %g $B0/${V0}$cached/user_file$i`;
 
 EXPECT "0" uid_gid_compare $NEW_UID $NEW_GID $BACKEND_UID $BACKEND_GID
 cleanup;

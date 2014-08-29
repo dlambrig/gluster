@@ -158,9 +158,14 @@
 
 #define DEFAULT_VAR_RUN_DIRECTORY        DATADIR "/run/gluster"
 #define DEFAULT_GLUSTERFSD_MISC_DIRETORY DATADIR "/lib/misc/glusterfsd"
+#ifdef GF_LINUX_HOST_OS
+#define GLUSTERD_DEFAULT_WORKDIR DATADIR "/lib/glusterd"
+#else
+#define GLUSTERD_DEFAULT_WORKDIR DATADIR "/db/glusterd"
+#endif
 #define GF_REPLICATE_TRASH_DIR           ".landfill"
 
-/* GlusterFS's maximum supported Auxilary GIDs */
+/* GlusterFS's maximum supported Auxiliary GIDs */
 /* TODO: Keeping it to 200, so that we can fit in 2KB buffer for auth data
  * in RPC server code, if there is ever need for having more aux-gids, then
  * we have to add aux-gid in payload of actors */
@@ -188,6 +193,9 @@
                                                        (iabuf)->ia_type) & ~S_IFMT)\
                                      == DHT_LINKFILE_MODE)
 #define DHT_LINKFILE_STR "linkto"
+
+#define DHT_SKIP_NON_LINKTO_UNLINK "unlink-only-if-dht-linkto-file"
+#define DHT_SKIP_OPEN_FD_UNLINK "dont-unlink-for-open-fd"
 
 #define GF_LOG_LRU_BUFSIZE_DEFAULT 5
 #define GF_LOG_LRU_BUFSIZE_MIN 0
@@ -574,9 +582,8 @@ struct gf_flock {
  * reduce functionality, both for users and for testing (which can now be
  * done using secure connections for all tests without change elsewhere).
  *
- * Nonetheless, TBD: define in terms of build-time PREFIX
  */
-#define SECURE_ACCESS_FILE      "/var/lib/glusterd/secure-access"
+#define SECURE_ACCESS_FILE     GLUSTERD_DEFAULT_WORKDIR "/secure-access"
 
 int glusterfs_graph_prepare (glusterfs_graph_t *graph, glusterfs_ctx_t *ctx);
 int glusterfs_graph_destroy (glusterfs_graph_t *graph);

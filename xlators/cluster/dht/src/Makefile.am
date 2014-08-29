@@ -24,7 +24,7 @@ switch_la_LIBADD = $(top_builddir)/libglusterfs/src/libglusterfs.la
 cache_tier_la_LDFLAGS = -module -avoid-version
 cache_tier_la_LIBADD = $(top_builddir)/libglusterfs/src/libglusterfs.la
 
-noinst_HEADERS = dht-common.h dht-mem-types.h dht-messages.h \
+noinst_HEADERS = dht-common.h dht-mem-types.h dht-messages.h dht-helper.h \
 	$(top_builddir)/xlators/lib/src/libxlator.h
 
 AM_CPPFLAGS = $(GF_CPPFLAGS) -I$(top_srcdir)/libglusterfs/src \
@@ -49,7 +49,7 @@ dht_layout_unittest_CPPFLAGS = $(AM_CPPFLAGS)
 dht_layout_unittest_SOURCES = unittest/dht_layout_unittest.c \
                               unittest/dht_layout_mock.c \
                               dht-layout.c
-dht_layout_unittest_CFLAGS = $(UNITTEST_CFLAGS)
+dht_layout_unittest_CFLAGS = $(AM_CFLAGS) $(UNITTEST_CFLAGS)
 dht_layout_unittest_LDFLAGS = $(UNITTEST_LDFLAGS)
 noinst_PROGRAMS += dht_layout_unittest
 TESTS += dht_layout_unittest

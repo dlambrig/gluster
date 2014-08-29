@@ -50,6 +50,7 @@ typedef int (*afr_changelog_resume_t) (call_frame_t *frame, xlator_t *this);
 #define alloca0(size) ({void *__ptr; __ptr = alloca(size); memset(__ptr, 0, size); __ptr;})
 #define AFR_COUNT(array,max) ({int __i; int __res = 0; for (__i = 0; __i < max; __i++) if (array[__i]) __res++; __res;})
 #define AFR_INTERSECT(dst,src1,src2,max) ({int __i; for (__i = 0; __i < max; __i++) dst[__i] = src1[__i] && src2[__i];})
+#define AFR_CMP(a1,a2,len) ({int __cmp = 0; int __i; for (__i = 0; __i < len; __i++) if (a1[__i] != a2[__i]) { __cmp = 1; break;} __cmp;})
 
 typedef struct _afr_private {
         gf_lock_t lock;               /* to guard access to child_count, etc */
@@ -419,6 +420,7 @@ typedef struct _afr_local {
         struct {
                 struct {
                         gf_boolean_t needs_fresh_lookup;
+                        uuid_t gfid_req;
                 } lookup;
 
                 struct {
@@ -819,7 +821,7 @@ int
 afr_replies_interpret (call_frame_t *frame, xlator_t *this, inode_t *inode);
 
 void
-afr_replies_wipe (afr_local_t *local, afr_private_t *priv);
+afr_local_replies_wipe (afr_local_t *local, afr_private_t *priv);
 
 void
 afr_local_cleanup (afr_local_t *local, xlator_t *this);
@@ -962,4 +964,8 @@ afr_local_pathinfo (char *pathinfo, gf_boolean_t *is_local);
 
 void
 afr_remove_eager_lock_stub (afr_local_t *local);
+
+void
+afr_replies_wipe (struct afr_reply *replies, int count);
+
 #endif /* __AFR_H__ */

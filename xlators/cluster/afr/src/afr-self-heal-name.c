@@ -21,7 +21,7 @@
 int
 __afr_selfheal_assign_gfid (call_frame_t *frame, xlator_t *this, inode_t *parent,
 			    uuid_t pargfid, const char *bname, inode_t *inode,
-			    struct afr_reply *replies, int gfid_idx)
+			    struct afr_reply *replies, void *gfid)
 {
 	int i = 0;
 	afr_private_t *priv = NULL;
@@ -38,8 +38,7 @@ __afr_selfheal_assign_gfid (call_frame_t *frame, xlator_t *this, inode_t *parent
 		return -ENOMEM;
 	}
 
-	ret = dict_set_static_bin (xdata, "gfid-req",
-				   replies[gfid_idx].poststat.ia_gfid, 16);
+	ret = dict_set_static_bin (xdata, "gfid-req", gfid, 16);
 	if (ret) {
 		dict_destroy (xdata);
 		return -ENOMEM;
@@ -150,11 +149,12 @@ __afr_selfheal_name_do (call_frame_t *frame, xlator_t *this, inode_t *parent,
 			uuid_t pargfid, const char *bname, inode_t *inode,
 			unsigned char *sources, unsigned char *sinks,
 			unsigned char *healed_sinks, int source,
-			unsigned char *locked_on, struct afr_reply *replies)
+			unsigned char *locked_on, struct afr_reply *replies,
+                        void *gfid_req)
 {
 	int i = 0;
 	afr_private_t *priv = NULL;
-	uuid_t gfid = {0, };
+	void* gfid = NULL;
 	int gfid_idx = -1;
 	gf_boolean_t source_is_empty = _gf_true;
 	gf_boolean_t need_heal = _gf_false;
@@ -166,6 +166,10 @@ __afr_selfheal_name_do (call_frame_t *frame, xlator_t *this, inode_t *parent,
 	for (i = 0; i < priv->child_count; i++) {
 		if (!replies[i].valid)
 			continue;
+
+                if ((replies[i].op_ret == -1) &&
+                    (replies[i].op_errno == ENODATA))
+                        need_heal = _gf_true;
 
 		if (first_idx == -1) {
 			first_idx = i;
@@ -184,14 +188,18 @@ __afr_selfheal_name_do (call_frame_t *frame, xlator_t *this, inode_t *parent,
 		return 0;
 
 	for (i = 0; i < priv->child_count; i++) {
-		if (!replies[i].valid)
-			continue;
+                if (!sources[i])
+                        continue;
 
-		if (!replies[i].op_ret && (source == -1 || sources[i])) {
-			source_is_empty = _gf_false;
-			break;
-		}
+                if (replies[i].op_ret == -1 && replies[i].op_errno == ENOENT)
+                        continue;
+
+                source_is_empty = _gf_false;
+                break;
 	}
+
+        if (source == -1)
+                source_is_empty = _gf_false;
 
 	if (source_is_empty) {
 		return __afr_selfheal_name_expunge (frame, this, parent, pargfid,
@@ -205,8 +213,8 @@ __afr_selfheal_name_do (call_frame_t *frame, xlator_t *this, inode_t *parent,
 		if (uuid_is_null (replies[i].poststat.ia_gfid))
 			continue;
 
-		if (uuid_is_null (gfid)) {
-			uuid_copy (gfid, replies[i].poststat.ia_gfid);
+		if (!gfid) {
+			gfid = &replies[i].poststat.ia_gfid;
 			gfid_idx = i;
 			continue;
 		}
@@ -227,17 +235,26 @@ __afr_selfheal_name_do (call_frame_t *frame, xlator_t *this, inode_t *parent,
 				return -1;
 			}
 
-			uuid_copy (gfid, replies[i].poststat.ia_gfid);
+                        gfid = &replies[i].poststat.ia_gfid;
 			gfid_idx = i;
 			continue;
 		}
 	}
 
-	if (gfid_idx == -1)
-		return -1;
+	if (gfid_idx == -1) {
+                if (!gfid_req || uuid_is_null (gfid_req))
+                        return -1;
+                gfid = gfid_req;
+        }
 
 	__afr_selfheal_assign_gfid (frame, this, parent, pargfid, bname, inode,
-				    replies, gfid_idx);
+				    replies, gfid);
+        /*TODO:
+         * once the gfid is assigned refresh the replies and carry on with
+         * impunge. i.e. gfid_idx won't be -1.
+         */
+        if (gfid_idx == -1)
+                return -1;
 
 	return __afr_selfheal_name_impunge (frame, this, parent, pargfid,
 					    bname, inode, replies, gfid_idx);
@@ -246,23 +263,20 @@ __afr_selfheal_name_do (call_frame_t *frame, xlator_t *this, inode_t *parent,
 
 int
 __afr_selfheal_name_finalize_source (xlator_t *this, unsigned char *sources,
-				     unsigned char *sinks, unsigned char *locked_on,
-				     struct afr_reply *replies)
+				     unsigned char *healed_sinks,
+                                     unsigned char *locked_on)
 {
 	int i = 0;
 	afr_private_t *priv = NULL;
 	int source = -1;
-	int locked_count = 0;
 	int sources_count = 0;
-	int sinks_count = 0;
 
 	priv = this->private;
 
-	locked_count = AFR_COUNT (locked_on, priv->child_count);
 	sources_count = AFR_COUNT (sources, priv->child_count);
-	sinks_count = AFR_COUNT (sinks, priv->child_count);
 
-	if (locked_count == sinks_count || !sources_count) {
+	if ((AFR_CMP (locked_on, healed_sinks, priv->child_count) == 0)
+            || !sources_count) {
 		return -1;
 	}
 
@@ -281,44 +295,48 @@ int
 __afr_selfheal_name_prepare (call_frame_t *frame, xlator_t *this, inode_t *parent,
 			     uuid_t pargfid, unsigned char *locked_on,
 			     unsigned char *sources, unsigned char *sinks,
-			     unsigned char *healed_sinks, struct afr_reply *replies,
-			     int *source_p)
+			     unsigned char *healed_sinks, int *source_p)
 {
 	int ret = -1;
 	int source = -1;
 	afr_private_t *priv = NULL;
-	int i = 0;
+        struct afr_reply *replies = NULL;
 
 	priv = this->private;
 
+        replies = alloca0 (priv->child_count * sizeof(*replies));
+
 	ret = afr_selfheal_unlocked_discover (frame, parent, pargfid, replies);
 	if (ret)
-		return ret;
+		goto out;
 
 	ret = afr_selfheal_find_direction (frame, this, replies,
 					   AFR_ENTRY_TRANSACTION,
 					   locked_on, sources, sinks);
 	if (ret)
-		return ret;
+		goto out;
 
-	source = __afr_selfheal_name_finalize_source (this, sources, sinks,
-						      locked_on, replies);
+        /* Initialize the healed_sinks[] array optimistically to
+           the intersection of to-be-healed (i.e sinks[]) and
+           the list of servers which are up (i.e locked_on[]).
+
+           As we encounter failures in the healing process, we
+           will unmark the respective servers in the healed_sinks[]
+           array.
+        */
+        AFR_INTERSECT (healed_sinks, sinks, locked_on, priv->child_count);
+
+	source = __afr_selfheal_name_finalize_source (this, sources,
+                                                      healed_sinks, locked_on);
 	if (source < 0) {
 		/* If source is < 0 (typically split-brain), we perform a
 		   conservative merge of entries rather than erroring out */
 	}
 	*source_p = source;
 
-	for (i = 0; i < priv->child_count; i++)
-		/* Initialize the healed_sinks[] array optimistically to
-		   the intersection of to-be-healed (i.e sinks[]) and
-		   the list of servers which are up (i.e locked_on[]).
-
-		   As we encounter failures in the healing process, we
-		   will unmark the respective servers in the healed_sinks[]
-		   array.
-		*/
-		healed_sinks[i] = sinks[i] && locked_on[i];
+out:
+        if (replies)
+                afr_replies_wipe (replies, priv->child_count);
 
 	return ret;
 }
@@ -326,7 +344,7 @@ __afr_selfheal_name_prepare (call_frame_t *frame, xlator_t *this, inode_t *paren
 
 int
 afr_selfheal_name_do (call_frame_t *frame, xlator_t *this, inode_t *parent,
-		      uuid_t pargfid, const char *bname)
+		      uuid_t pargfid, const char *bname, void *gfid_req)
 {
 	afr_private_t *priv = NULL;
 	unsigned char *sources = NULL;
@@ -334,7 +352,7 @@ afr_selfheal_name_do (call_frame_t *frame, xlator_t *this, inode_t *parent,
 	unsigned char *healed_sinks = NULL;
 	unsigned char *locked_on = NULL;
 	int source = -1;
-	struct afr_reply *replies = NULL;
+        struct afr_reply *replies = NULL;
 	int ret = -1;
 	inode_t *inode = NULL;
 
@@ -357,8 +375,7 @@ afr_selfheal_name_do (call_frame_t *frame, xlator_t *this, inode_t *parent,
 
 		ret = __afr_selfheal_name_prepare (frame, this, parent, pargfid,
 						   locked_on, sources, sinks,
-						   healed_sinks, replies,
-						   &source);
+						   healed_sinks, &source);
 		if (ret)
 			goto unlock;
 
@@ -371,13 +388,17 @@ afr_selfheal_name_do (call_frame_t *frame, xlator_t *this, inode_t *parent,
 
 		ret = __afr_selfheal_name_do (frame, this, parent, pargfid, bname,
 					      inode, sources, sinks, healed_sinks,
-					      source, locked_on, replies);
+					      source, locked_on, replies,
+                                              gfid_req);
 	}
 unlock:
 	afr_selfheal_unentrylk (frame, this, parent, this->name, bname,
 				locked_on);
 	if (inode)
 		inode_unref (inode);
+
+        if (replies)
+                afr_replies_wipe (replies, priv->child_count);
 
 	return ret;
 }
@@ -407,6 +428,10 @@ afr_selfheal_name_unlocked_inspect (call_frame_t *frame, xlator_t *this,
 		if (!replies[i].valid)
 			continue;
 
+                if ((replies[i].op_ret == -1) &&
+                    (replies[i].op_errno == ENODATA))
+                        *need_heal = _gf_true;
+
 		if (first_idx == -1) {
 			first_idx = i;
 			continue;
@@ -422,11 +447,14 @@ afr_selfheal_name_unlocked_inspect (call_frame_t *frame, xlator_t *this,
 
 	if (inode)
 		inode_unref (inode);
+        if (replies)
+                afr_replies_wipe (replies, priv->child_count);
 	return 0;
 }
 
 int
-afr_selfheal_name (xlator_t *this, uuid_t pargfid, const char *bname)
+afr_selfheal_name (xlator_t *this, uuid_t pargfid, const char *bname,
+                   void *gfid_req)
 {
 	inode_t *parent = NULL;
 	call_frame_t *frame = NULL;
@@ -447,7 +475,8 @@ afr_selfheal_name (xlator_t *this, uuid_t pargfid, const char *bname)
 		goto out;
 
 	if (need_heal)
-		afr_selfheal_name_do (frame, this, parent, pargfid, bname);
+		afr_selfheal_name_do (frame, this, parent, pargfid, bname,
+                                      gfid_req);
 out:
 	if (parent)
 		inode_unref (parent);

@@ -26,6 +26,7 @@ import subprocess
 from errno import EEXIST, ENOENT, ENODATA, ENOTDIR, ELOOP
 from errno import EISDIR, ENOTEMPTY, ESTALE, EINVAL
 from select import error as SelectError
+import shutil
 
 from gconf import gconf
 import repce
@@ -616,6 +617,17 @@ class Server(object):
                 while True:
                     er = entry_purge(entry, gfid)
                     if isinstance(er, int):
+                        if er == ENOTEMPTY and op == 'RMDIR':
+                            er1 = errno_wrap(shutil.rmtree,
+                                             [os.path.join(pg, bname)],
+                                             [ENOENT])
+                            if not isinstance(er1, int):
+                                logging.info("Removed %s/%s recursively" %
+                                             (pg, bname))
+                                break
+
+                        logging.warn("Failed to remove %s => %s/%s. %s" %
+                                     (gfid, pg, bname, os.strerror(er)))
                         time.sleep(1)
                     else:
                         break
@@ -1281,22 +1293,27 @@ class GLUSTER(AbstractUrl, SlaveLocal, SlaveRemote):
 
             try:
                 workdir = g2.setup_working_dir()
-                # register with the changelog library
-                # 9 == log level (DEBUG)
-                # 5 == connection retries
-                changelog_agent.register(gconf.local_path,
-                                         workdir, gconf.changelog_log_file,
-                                         g2.CHANGELOG_LOG_LEVEL,
-                                         g2.CHANGELOG_CONN_RETRIES)
+                # Register only when change_detector is not set to
+                # xsync, else agent will generate changelog files
+                # in .processing directory of working dir
+                if gconf.change_detector != 'xsync':
+                    # register with the changelog library
+                    # 9 == log level (DEBUG)
+                    # 5 == connection retries
+                    changelog_agent.register(gconf.local_path,
+                                             workdir, gconf.changelog_log_file,
+                                             g2.CHANGELOG_LOG_LEVEL,
+                                             g2.CHANGELOG_CONN_RETRIES)
+
                 register_time = int(time.time())
                 g2.register(register_time, changelog_agent)
                 g3.register(register_time, changelog_agent)
             except ChangelogException:
                 changelog_register_failed = True
-                register_time = int(time.time())
+                register_time = None
                 logging.info("Changelog register failed, fallback to xsync")
 
-            g1.register(register_time)
+            g1.register()
             logging.info("Register time: %s" % register_time)
             # oneshot: Try to use changelog history api, if not
             # available switch to FS crawl
@@ -1316,17 +1333,8 @@ class GLUSTER(AbstractUrl, SlaveLocal, SlaveRemote):
                     logging.info('Partial history available, using xsync crawl'
                                  ' after consuming history '
                                  'till %s' % str(e))
-                g1.crawlwrap(oneshot=True, no_stime_update=True)
-
-            # Reset xsync upper limit. g2, g3 are changelog and history
-            # instances, but if change_detector is set to xsync then
-            # g1, g2, g3 will be xsync instances.
-            g1.xsync_upper_limit = None
-            if getattr(g2, "xsync_upper_limit", None) is not None:
-                g2.xsync_upper_limit = None
-
-            if getattr(g3, "xsync_upper_limit", None) is not None:
-                g3.xsync_upper_limit = None
+                g1.crawlwrap(oneshot=True, no_stime_update=True,
+                             register_time=register_time)
 
             # crawl loop: Try changelog crawl, if failed
             # switch to FS crawl

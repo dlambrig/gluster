@@ -847,6 +847,7 @@ __socket_reset (rpc_transport_t *this)
 
         if (priv->incoming.iobuf) {
                 iobuf_unref (priv->incoming.iobuf);
+                priv->incoming.iobuf = NULL;
         }
 
         GF_FREE (priv->incoming.request_info);
@@ -1899,10 +1900,10 @@ out:
 }
 
 
-static inline
-void __socket_reset_priv (socket_private_t *priv)
+static inline void
+__socket_reset_priv (socket_private_t *priv)
 {
-        struct gf_sock_incoming      *in         = NULL;
+        struct gf_sock_incoming   *in    = NULL;
 
         /* used to reduce the indirection */
         in = &priv->incoming;
@@ -1914,6 +1915,7 @@ void __socket_reset_priv (socket_private_t *priv)
 
         if (in->iobuf) {
                 iobuf_unref (in->iobuf);
+                in->iobuf = NULL;
         }
 
         if (in->request_info != NULL) {
@@ -1924,7 +1926,6 @@ void __socket_reset_priv (socket_private_t *priv)
         memset (&in->payload_vector, 0,
                 sizeof (in->payload_vector));
 
-        in->iobuf = NULL;
 }
 
 
@@ -1987,6 +1988,12 @@ __socket_proto_state_machine (rpc_transport_t *this,
 
                         in->fraghdr = ntoh32 (in->fraghdr);
                         in->total_bytes_read += RPC_FRAGSIZE(in->fraghdr);
+
+                        if (in->total_bytes_read >= GF_UNIT_GB) {
+                                ret = -ENOMEM;
+                                goto out;
+                        }
+
                         iobuf = iobuf_get2 (this->ctx->iobuf_pool,
                                             (in->total_bytes_read +
                                              sizeof (in->fraghdr)));
@@ -2087,6 +2094,7 @@ out:
         if ((ret == -1) && (errno == EAGAIN)) {
                 ret = 0;
         }
+
         return ret;
 }
 
@@ -2744,6 +2752,7 @@ socket_connect (rpc_transport_t *this, int port)
         socket_connect_error_state_t  *arg             = NULL;
         pthread_t                      th_id           = {0, };
         char                          *cname           = NULL;
+        gf_boolean_t                   ign_enoent      = _gf_false;
 
         GF_VALIDATE_OR_GOTO ("socket", this, err);
         GF_VALIDATE_OR_GOTO ("socket", this->private, err);
@@ -2863,6 +2872,10 @@ socket_connect (rpc_transport_t *this, int port)
                                          &(addr->sin_addr.s_addr));
                 }
 
+                /* If client wants ENOENT to be ignored */
+               ign_enoent = dict_get_str_boolean (this->options,
+                   "transport.socket.ignore-enoent", _gf_false);
+
                 ret = client_bind (this, SA (&this->myinfo.sockaddr),
                                    &this->myinfo.sockaddr_len, priv->sock);
                 if (ret == -1) {
@@ -2883,6 +2896,13 @@ socket_connect (rpc_transport_t *this, int port)
 
                 ret = connect (priv->sock, SA (&this->peerinfo.sockaddr),
                                this->peerinfo.sockaddr_len);
+
+                if (ret == -1 && errno == ENOENT && ign_enoent) {
+                        gf_log (this->name, GF_LOG_WARNING,
+                               "Ignore failed connection attempt on %s, (%s) ",
+                                this->peerinfo.identifier, strerror (errno));
+                        goto handler;
+                }
 
                 if (ret == -1 && ((errno != EINPROGRESS) && (errno != ENOENT))) {
                         /* For unix path based sockets, the socket path is

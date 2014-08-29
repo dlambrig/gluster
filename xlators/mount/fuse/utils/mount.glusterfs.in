@@ -297,6 +297,11 @@ start_glusterfs ()
     cmd_line=$(echo "$cmd_line $mount_point");
 
     $cmd_line;
+    if [ $? -ne 0 ]; then
+        warn "Mount failed. Please check the log file for more details."
+        exit 1;
+    fi
+
 
     inode=$( ${getinode} $mount_point 2>/dev/null);
     # this is required if the stat returns error
@@ -338,9 +343,9 @@ check_recursive_mount ()
     fi
 
     # check if the mount point is a brick's parent directory
-    GLUSTERD_WORKDIR="/var/lib/glusterd";
+    GLUSTERD_WORKDIR="@GLUSTERD_WORKDIR@";
 
-    ls -L "$GLUSTERD_WORKDIR"/vols/*/bricks/* > /dev/null 2>&1;
+    ls -L "${GLUSTERD_WORKDIR}"/vols/*/bricks/* > /dev/null 2>&1;
     if [ $? -ne 0 ]; then
         return;
     fi
@@ -555,11 +560,14 @@ main ()
         ## `mount` specifies options as a last argument
         shift 2;
     fi
-    while getopts "Vo:h" opt; do
+    while getopts "Vo:hn" opt; do
         case "${opt}" in
             o)
                 parse_options ${OPTARG};
 		shift 2;
+                ;;
+            n)
+		shift 1;
                 ;;
             V)
                 ${cmd_line} -V;

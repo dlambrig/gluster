@@ -9,7 +9,8 @@ function check_dependencies()
     MISSING=""
 
     # Check for dbench
-    if [ ! -x /usr/bin/dbench ]; then
+    env dbench --usage > /dev/null 2>&1
+    if [ $? -ne 0 ]; then
         MISSING="$MISSING dbench"
     fi
 
@@ -36,9 +37,9 @@ function check_dependencies()
         MISSING="$MISSING perl-Test-Harness"
     fi
 
-    # Check for YAJL
-    if [ ! -x /usr/bin/json_verify ]; then
-        MISSING="$MISSING yajl"
+    which json_verify > /dev/null
+    if [ $? -ne 0 ]; then
+        MISSING="$MISSING json_verify"
     fi
 
     # Check for XFS programs
@@ -53,9 +54,23 @@ function check_dependencies()
         MISSING="$MISSING attr"
     fi
 
+    # Check for pidof
+    pidof init > /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        MISSING="$MISSING pidof"
+    fi
+
+    # check for psutil python package
+    test `uname -s` == "Darwin" || test `uname -s` == "FreeBSD" && {
+        pip show psutil | grep -q psutil >/dev/null 2>&1
+        if [ $? -ne 0 ]; then
+            MISSING="$MISSING psutil"
+        fi
+    }
+
     ## If dependencies are missing, warn the user and abort
     if [ "x$MISSING" != "x" ]; then
-        echo "Aborting."
+        test "x${force}" != "xyes" && echo "Aborting."
         echo
         echo "The following required tools are missing:"
         echo
@@ -63,6 +78,7 @@ function check_dependencies()
             echo "  * $pkg"
         done
         echo
+        test "x${force}" = "xyes" && return
         echo "Please install them and try again."
         echo
         exit 2
@@ -158,7 +174,7 @@ function run_tests()
                 echo "Running tests in file $t"
                 prove -f --timer $t
             fi
-	    TMP_RES=$?
+            TMP_RES=$?
             if [ ${TMP_RES} -ne 0 ] ; then
                 RES=${TMP_RES}
                 FAILED="$FAILED $t"
@@ -184,6 +200,9 @@ function main()
 echo
 echo ... GlusterFS Test Framework ...
 echo
+
+force=no
+test "x$1" = "x-f" && { force="yes"; shift; }
 
 # Make sure we're running as the root user
 check_user

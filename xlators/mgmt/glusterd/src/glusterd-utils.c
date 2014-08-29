@@ -18,6 +18,11 @@
 #else
 #include "mntent_compat.h"
 #endif
+#include <dlfcn.h>
+#if (HAVE_LIB_XML)
+#include <libxml/encoding.h>
+#include <libxml/xmlwriter.h>
+#endif
 
 #include "globals.h"
 #include "glusterfs.h"
@@ -46,6 +51,7 @@
 #include "glusterd-syncop.h"
 #include "glusterd-locks.h"
 #include "glusterd-messages.h"
+#include "glusterd-volgen.h"
 
 #include "xdr-generic.h"
 #include <sys/resource.h>
@@ -80,6 +86,8 @@
 
 #define CEILING_POS(X) (((X)-(int)(X)) > 0 ? (int)((X)+1) : (int)(X))
 
+extern struct volopt_map_entry glusterd_volopt_map[];
+
 static glusterd_lock_t lock;
 
 
@@ -112,7 +120,11 @@ glusterd_is_fuse_available ()
 
         int     fd = 0;
 
+#ifdef __NetBSD__
+	fd = open ("/dev/puffs", O_RDWR);
+#else
         fd = open ("/dev/fuse", O_RDWR);
+#endif
 
         if (fd > -1 && !close (fd))
                 return _gf_true;
@@ -264,9 +276,16 @@ glusterd_submit_request_unlocked (struct rpc_clnt *rpc, void *req,
         }
 
         /* Send the msg */
-        ret = rpc_clnt_submit (rpc, prog, procnum, cbkfn,
-                               &iov, count,
-                               NULL, 0, iobref, frame, NULL, 0, NULL, 0, NULL);
+        rpc_clnt_submit (rpc, prog, procnum, cbkfn, &iov, count, NULL, 0,
+                         iobref, frame, NULL, 0, NULL, 0, NULL);
+
+        /* Unconditionally set ret to 0 here. This is to guard against a double
+         * STACK_DESTROY in case of a failure in rpc_clnt_submit AFTER the
+         * request is sent over the wire: once in the callback function of the
+         * request and once in the error codepath of some of the callers of
+         * glusterd_submit_request().
+         */
+        ret = 0;
 out:
         if (new_iobref) {
                 iobref_unref (iobref);
@@ -481,8 +500,16 @@ glusterd_volinfo_new (glusterd_volinfo_t **volinfo)
 
         new_volinfo->gsync_slaves = dict_new ();
         if (!new_volinfo->gsync_slaves) {
+                dict_unref (new_volinfo->dict);
                 GF_FREE (new_volinfo);
+                goto out;
+        }
 
+        new_volinfo->gsync_active_slaves = dict_new ();
+        if (!new_volinfo->gsync_active_slaves) {
+                dict_unref (new_volinfo->dict);
+                dict_unref (new_volinfo->gsync_slaves);
+                GF_FREE (new_volinfo);
                 goto out;
         }
 
@@ -546,6 +573,8 @@ glusterd_volinfo_dup (glusterd_volinfo_t *volinfo,
 
         dict_copy (volinfo->dict, new_volinfo->dict);
         dict_copy (volinfo->gsync_slaves, new_volinfo->gsync_slaves);
+        dict_copy (volinfo->gsync_active_slaves,
+                   new_volinfo->gsync_active_slaves);
         gd_update_volume_op_versions (new_volinfo);
 
         if (set_userauth) {
@@ -588,6 +617,7 @@ glusterd_brickinfo_dup (glusterd_brickinfo_t *brickinfo,
         strcpy (dup_brickinfo->path, brickinfo->path);
         strcpy (dup_brickinfo->device_path, brickinfo->device_path);
         strcpy (dup_brickinfo->fstype, brickinfo->fstype);
+        strcpy (dup_brickinfo->mnt_opts, brickinfo->mnt_opts);
         ret = gf_canonicalize_path (dup_brickinfo->path);
         if (ret) {
                 gf_log (THIS->name, GF_LOG_ERROR, "Failed to canonicalize "
@@ -609,6 +639,85 @@ glusterd_brickinfo_dup (glusterd_brickinfo_t *brickinfo,
         strcpy (dup_brickinfo->mount_dir, brickinfo->mount_dir);
         dup_brickinfo->status = brickinfo->status;
         dup_brickinfo->snap_status = brickinfo->snap_status;
+out:
+        return ret;
+}
+/*
+ * gd_vol_is_geo_rep_active:
+ *      This function checks for any running geo-rep session for
+ *      the volume given.
+ *
+ * Return Value:
+ *      _gf_true : If any running geo-rep session.
+ *      _gf_false: If no running geo-rep session.
+ */
+
+gf_boolean_t
+gd_vol_is_geo_rep_active (glusterd_volinfo_t *volinfo)
+{
+        gf_boolean_t     active = _gf_false;
+
+        GF_ASSERT (volinfo);
+
+        if (volinfo->gsync_active_slaves &&
+            volinfo->gsync_active_slaves->count > 0)
+                active = _gf_true;
+
+        return active;
+}
+
+/*
+ * glusterd_snap_geo_rep_restore:
+ *      This function restores the atime and mtime of marker.tstamp
+ *      if present from snapped marker.tstamp file.
+ */
+static int
+glusterd_snap_geo_rep_restore (glusterd_volinfo_t *snap_volinfo,
+                               glusterd_volinfo_t *new_volinfo)
+{
+        char                    vol_tstamp_file[PATH_MAX]  = {0,};
+        char                    snap_tstamp_file[PATH_MAX] = {0,};
+        glusterd_conf_t         *priv                      = NULL;
+        xlator_t                *this                      = NULL;
+        int                     geo_rep_indexing_on        = 0;
+        int                     ret                        = 0;
+
+        this = THIS;
+        GF_ASSERT (this);
+        GF_ASSERT (snap_volinfo);
+        GF_ASSERT (new_volinfo);
+
+        priv = this->private;
+        GF_ASSERT (priv);
+
+        /* Check if geo-rep indexing is enabled, if yes, we need restore
+         * back the mtime of 'marker.tstamp' file.
+         */
+        geo_rep_indexing_on = glusterd_volinfo_get_boolean (new_volinfo,
+                                                            VKEY_MARKER_XTIME);
+        if (geo_rep_indexing_on == -1) {
+                gf_log (this->name, GF_LOG_DEBUG, "Failed"
+                        " to check whether geo-rep-indexing enabled or not");
+                ret = 0;
+                goto out;
+        }
+
+        if (geo_rep_indexing_on == 1) {
+                GLUSTERD_GET_VOLUME_DIR (vol_tstamp_file, new_volinfo, priv);
+                strncat (vol_tstamp_file, "/marker.tstamp",
+                         PATH_MAX - strlen(vol_tstamp_file) - 1);
+                GLUSTERD_GET_VOLUME_DIR (snap_tstamp_file, snap_volinfo, priv);
+                strncat (snap_tstamp_file, "/marker.tstamp",
+                         PATH_MAX - strlen(snap_tstamp_file) - 1);
+                ret = gf_set_timestamp (snap_tstamp_file, vol_tstamp_file);
+                if (ret) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "Unable to set atime and mtime of %s as of %s",
+                                vol_tstamp_file, snap_tstamp_file);
+                        goto out;
+                }
+        }
+
 out:
         return ret;
 }
@@ -693,6 +802,13 @@ glusterd_snap_volinfo_restore (dict_t *dict, dict_t *rsp_dict,
                         strncpy (new_brickinfo->fstype, value,
                                  sizeof(new_brickinfo->fstype));
 
+                snprintf (key, sizeof (key), "snap%d.brick%d.mnt_opts",
+                          volcount, brick_count);
+                ret = dict_get_str (dict, key, &value);
+                if (!ret)
+                        strncpy (new_brickinfo->mnt_opts, value,
+                                 sizeof(new_brickinfo->mnt_opts));
+
                 /* If the brick is not of this peer, or snapshot is missed *
                  * for the brick do not replace the xattr for it */
                 if ((!uuid_compare (brickinfo->uuid, MY_UUID)) &&
@@ -745,6 +861,19 @@ glusterd_snap_volinfo_restore (dict_t *dict, dict_t *rsp_dict,
 
         /* Regenerate all volfiles */
         ret = glusterd_create_volfiles_and_notify_services (new_volinfo);
+        if (ret) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "Failed to regenerate volfiles");
+                goto out;
+        }
+
+        /* Restore geo-rep marker.tstamp's timestamp */
+        ret = glusterd_snap_geo_rep_restore (snap_volinfo, new_volinfo);
+        if (ret) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "Geo-rep: marker.tstamp's timestamp restoration failed");
+                goto out;
+        }
 
 out:
         if (ret && (NULL != new_brickinfo)) {
@@ -863,6 +992,8 @@ glusterd_volinfo_delete (glusterd_volinfo_t *volinfo)
                 dict_unref (volinfo->dict);
         if (volinfo->gsync_slaves)
                 dict_unref (volinfo->gsync_slaves);
+        if (volinfo->gsync_active_slaves)
+                dict_unref (volinfo->gsync_active_slaves);
         GF_FREE (volinfo->logdir);
         if (volinfo->rebal.dict)
                 dict_unref (volinfo->rebal.dict);
@@ -2297,6 +2428,15 @@ gd_add_brick_snap_details_to_dict (dict_t *dict, char *prefix,
                 goto out;
         }
 
+        snprintf (key, sizeof (key), "%s.mnt_opts", prefix);
+        ret = dict_set_str (dict, key, brickinfo->mnt_opts);
+        if (ret) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "Failed to set mnt_opts for %s:%s",
+                         brickinfo->hostname, brickinfo->path);
+                goto out;
+        }
+
         memset (key, 0, sizeof (key));
         snprintf (key, sizeof (key), "%s.mount_dir", prefix);
         ret = dict_set_str (dict, key, brickinfo->mount_dir);
@@ -3650,6 +3790,7 @@ gd_import_new_brick_snap_details (dict_t *dict, char *prefix,
         char             key[512]    = {0,};
         char            *snap_device = NULL;
         char            *fs_type     = NULL;
+        char            *mnt_opts    = NULL;
         char            *mount_dir   = NULL;
 
         this = THIS;
@@ -3689,6 +3830,14 @@ gd_import_new_brick_snap_details (dict_t *dict, char *prefix,
                 goto out;
         }
         strcpy (brickinfo->fstype, fs_type);
+
+        snprintf (key, sizeof (key), "%s.mnt_opts", prefix);
+        ret = dict_get_str (dict, key, &mnt_opts);
+        if (ret) {
+                gf_log (this->name, GF_LOG_ERROR, "%s missing in payload", key);
+                goto out;
+        }
+        strcpy (brickinfo->mnt_opts, mnt_opts);
 
         memset (key, 0, sizeof (key));
         snprintf (key, sizeof (key), "%s.mount_dir", prefix);
@@ -5877,6 +6026,15 @@ glusterd_nodesvc_connect (char *server, char *socketpath)
                                                         600);
                 if (ret)
                         goto out;
+
+                if (!strcmp(server, "glustershd") ||
+                    !strcmp(server, "nfs") ||
+                    !strcmp(server, "quotad")) {
+                        ret = dict_set_str(options, "transport.socket.ignore-enoent", "on");
+                        if (ret)
+                                goto out;
+                }
+
                 ret = glusterd_rpc_create (&rpc, options,
                                            glusterd_nodesvc_rpc_notify,
                                            server);
@@ -6726,21 +6884,24 @@ _local_gsyncd_start (dict_t *this, char *key, data_t *value, void *data)
         char               *slave_vol                   = NULL;
         char               *slave_host                  = NULL;
         char               *statefile                   = NULL;
-        char                         buf[1024]          = "faulty";
+        char                buf[1024]                   = "faulty";
         int                 uuid_len                    = 0;
         int                 ret                         = 0;
         int                 op_ret                      = 0;
         int                 ret_status                  = 0;
-        char                         uuid_str[64]       = {0};
+        char                uuid_str[64]                = {0};
         glusterd_volinfo_t *volinfo                     = NULL;
-        char                         confpath[PATH_MAX] = "";
+        char                confpath[PATH_MAX]          = "";
         char               *op_errstr                   = NULL;
         glusterd_conf_t    *priv                        = NULL;
         gf_boolean_t        is_template_in_use          = _gf_false;
-        gf_boolean_t        is_paused                    = _gf_false;
+        gf_boolean_t        is_paused                   = _gf_false;
+        char               *key1                        = NULL;
+        xlator_t           *this1                       = NULL;
 
-        GF_ASSERT (THIS);
-        priv = THIS->private;
+        this1 = THIS;
+        GF_ASSERT (this1);
+        priv = this1->private;
         GF_ASSERT (priv);
         GF_ASSERT (data);
 
@@ -6761,7 +6922,7 @@ _local_gsyncd_start (dict_t *this, char *key, data_t *value, void *data)
         ret = glusterd_get_slave_info (slave, &slave_url, &slave_host,
                                        &slave_vol, &op_errstr);
         if (ret) {
-                gf_log ("", GF_LOG_ERROR,
+                gf_log (this1->name, GF_LOG_ERROR,
                         "Unable to fetch slave details.");
                 ret = -1;
                 goto out;
@@ -6779,10 +6940,10 @@ _local_gsyncd_start (dict_t *this, char *key, data_t *value, void *data)
                                            &is_template_in_use);
         if (ret) {
                 if (!strstr(slave, "::"))
-                        gf_log ("", GF_LOG_INFO,
+                        gf_log (this1->name, GF_LOG_INFO,
                                 "%s is not a valid slave url.", slave);
                 else
-                        gf_log ("", GF_LOG_INFO, "Unable to get"
+                        gf_log (this1->name, GF_LOG_INFO, "Unable to get"
                                 " statefile's name");
                 goto out;
         }
@@ -6790,7 +6951,7 @@ _local_gsyncd_start (dict_t *this, char *key, data_t *value, void *data)
         /* If state-file entry is missing from the config file,
          * do not start gsyncd on restart */
         if (is_template_in_use) {
-                gf_log ("", GF_LOG_INFO,
+                gf_log (this1->name, GF_LOG_INFO,
                         "state-file entry is missing in config file."
                         "Not Restarting");
                 goto out;
@@ -6801,14 +6962,14 @@ _local_gsyncd_start (dict_t *this, char *key, data_t *value, void *data)
         ret = gsync_status (volinfo->volname, slave, confpath,
                             &ret_status, &is_template_in_use);
         if (ret == -1) {
-                gf_log ("", GF_LOG_INFO,
+                gf_log (this1->name, GF_LOG_INFO,
                         GEOREP" start option validation failed ");
                 ret = 0;
                 goto out;
         }
 
         if (is_template_in_use == _gf_true) {
-                gf_log ("", GF_LOG_INFO,
+                gf_log (this1->name, GF_LOG_INFO,
                         "pid-file entry is missing in config file."
                         "Not Restarting");
                 ret = 0;
@@ -6817,16 +6978,20 @@ _local_gsyncd_start (dict_t *this, char *key, data_t *value, void *data)
 
         ret = glusterd_gsync_read_frm_status (statefile, buf, sizeof (buf));
         if (ret < 0) {
-                gf_log ("", GF_LOG_ERROR, "Unable to read the status");
+                gf_log (this1->name, GF_LOG_ERROR, "Unable to read the status");
                 goto out;
         }
+
+        /* Move the pointer two characters ahead to surpass '//' */
+        if ((key1 = strchr (slave, '/')))
+                key1 = key1 + 2;
 
         /* Looks for the last status, to find if the sessiom was running
          * when the node went down. If the session was not started or
          * not started, do not restart the geo-rep session */
         if ((!strcmp (buf, "Not Started")) ||
             (!strcmp (buf, "Stopped"))) {
-                gf_log ("", GF_LOG_INFO,
+                gf_log (this1->name, GF_LOG_INFO,
                         "Geo-Rep Session was not started between "
                         "%s and %s::%s. Not Restarting", volinfo->volname,
                         slave_url, slave_vol);
@@ -6834,7 +6999,7 @@ _local_gsyncd_start (dict_t *this, char *key, data_t *value, void *data)
         } else if (strstr(buf, "Paused")) {
                 is_paused = _gf_true;
         } else if ((!strcmp (buf, "Config Corrupted"))) {
-                gf_log ("", GF_LOG_INFO,
+                gf_log (this1->name, GF_LOG_INFO,
                         "Recovering from a corrupted config. "
                         "Not Restarting. Use start (force) to "
                         "start the session between %s and %s::%s.",
@@ -6843,12 +7008,24 @@ _local_gsyncd_start (dict_t *this, char *key, data_t *value, void *data)
                 goto out;
         }
 
-        if (is_paused)
+        if (is_paused) {
                 glusterd_start_gsync (volinfo, slave, path_list, confpath,
                                       uuid_str, NULL, _gf_true);
-        else
-                glusterd_start_gsync (volinfo, slave, path_list, confpath,
+        }
+        else {
+               /* Add slave to the dict indicating geo-rep session is running*/
+               ret = dict_set_dynstr_with_alloc (volinfo->gsync_active_slaves,
+                                                 key1, "running");
+               if (ret) {
+                       gf_log (this1->name, GF_LOG_ERROR, "Unable to set key:%s"
+                               " value:running in the dict", key1);
+                       goto out;
+               }
+               ret = glusterd_start_gsync (volinfo, slave, path_list, confpath,
                                       uuid_str, NULL, _gf_false);
+               if (ret)
+                       dict_del (volinfo->gsync_active_slaves, key1);
+        }
 
 out:
         if (statefile)
@@ -6859,7 +7036,7 @@ out:
                                                      slave_host, slave_vol,
                                                      "Config Corrupted");
                if (op_ret) {
-                        gf_log ("", GF_LOG_ERROR,
+                        gf_log (this1->name, GF_LOG_ERROR,
                                 "Unable to create status file"
                                 ". Error : %s", strerror (errno));
                         ret = op_ret;
@@ -11897,34 +12074,44 @@ glusterd_compare_volume_name(struct list_head *list1, struct list_head *list2)
 }
 
 int32_t
-glusterd_mount_lvm_snapshot (char *device_path, char *brick_mount_path,
-                             const char *fstype)
+glusterd_mount_lvm_snapshot (glusterd_brickinfo_t *brickinfo,
+                             char *brick_mount_path)
 {
-        char               msg[NAME_MAX] = "";
-        int32_t            ret           = -1;
-        runner_t           runner        = {0, };
-        xlator_t          *this          = NULL;
+        char               msg[NAME_MAX]  = "";
+        char               mnt_opts[1024] = "";
+        int32_t            ret            = -1;
+        runner_t           runner         = {0, };
+        xlator_t          *this           = NULL;
 
         this = THIS;
         GF_ASSERT (this);
         GF_ASSERT (brick_mount_path);
-        GF_ASSERT (device_path);
+        GF_ASSERT (brickinfo);
 
 
         runinit (&runner);
         snprintf (msg, sizeof (msg), "mount %s %s",
-                  device_path, brick_mount_path);
+                  brickinfo->device_path, brick_mount_path);
+
+        strcpy (mnt_opts, brickinfo->mnt_opts);
 
         /* XFS file-system does not allow to mount file-system with duplicate
          * UUID. File-system UUID of snapshot and its origin volume is same.
          * Therefore to mount such a snapshot in XFS we need to pass nouuid
          * option
          */
-        if (!strcmp (fstype, "xfs")) {
-                runner_add_args (&runner, "mount", "-o", "nouuid",
-                                 device_path, brick_mount_path, NULL);
+        if (!strcmp (brickinfo->fstype, "xfs")) {
+                if ( strlen (mnt_opts) > 0 )
+                        strcat (mnt_opts, ",");
+                strcat (mnt_opts, "nouuid");
+        }
+
+
+        if ( strlen (mnt_opts) > 0 ) {
+                runner_add_args (&runner, "mount", "-o", mnt_opts,
+                                brickinfo->device_path, brick_mount_path, NULL);
         } else {
-                runner_add_args (&runner, "mount", device_path,
+                runner_add_args (&runner, "mount", brickinfo->device_path,
                                  brick_mount_path, NULL);
         }
 
@@ -11932,12 +12119,12 @@ glusterd_mount_lvm_snapshot (char *device_path, char *brick_mount_path,
         ret = runner_run (&runner);
         if (ret) {
                 gf_log (this->name, GF_LOG_ERROR, "mounting the snapshot "
-                        "logical device %s failed (error: %s)", device_path,
-                        strerror (errno));
+                        "logical device %s failed (error: %s)",
+                        brickinfo->device_path, strerror (errno));
                 goto out;
         } else
                 gf_log (this->name, GF_LOG_DEBUG, "mounting the snapshot "
-                        "logical device %s successful", device_path);
+                        "logical device %s successful", brickinfo->device_path);
 
 out:
         gf_log (this->name, GF_LOG_TRACE, "Returning with %d", ret);
@@ -13062,6 +13249,11 @@ glusterd_snapd_connect (glusterd_volinfo_t *volinfo, char *socketpath)
                 if (ret)
                         goto out;
 
+                ret = dict_set_str(options,
+                                   "transport.socket.ignore-enoent", "on");
+                if (ret)
+                        goto out;
+
                 glusterd_volinfo_ref (volinfo);
 
                 synclock_unlock (&priv->big_lock);
@@ -13393,4 +13585,326 @@ gd_get_snap_conf_values_if_present (dict_t *dict, uint64_t *sys_hard_limit,
                         "dictionary",
                         GLUSTERD_STORE_KEY_SNAP_MAX_SOFT_LIMIT);
         }
+}
+
+/* This function will update the backend file-system
+ * type and the mount options in origin and snap brickinfo.
+ * This will be later used to perform file-system specific operation
+ * during LVM snapshot.
+ *
+ * @param brick_path       brickpath for which fstype to be found
+ * @param brickinfo        brickinfo of snap/origin volume
+ * @return 0 on success and -1 on failure
+ */
+int
+glusterd_update_mntopts (char *brick_path, glusterd_brickinfo_t *brickinfo)
+{
+        int32_t               ret               = -1;
+        char                 *mnt_pt            = NULL;
+        char                  buff [PATH_MAX]   = "";
+        char                  msg [PATH_MAX]    = "";
+        char                 *cmd               = NULL;
+        struct mntent        *entry             = NULL;
+        struct mntent         save_entry        = {0,};
+        runner_t              runner            = {0,};
+        xlator_t             *this              = NULL;
+
+        this = THIS;
+        GF_ASSERT (this);
+        GF_ASSERT (brick_path);
+        GF_ASSERT (brickinfo);
+
+        ret = glusterd_get_brick_root (brick_path, &mnt_pt);
+        if (ret) {
+                gf_log (this->name, GF_LOG_ERROR, "getting the root "
+                        "of the brick (%s) failed ", brick_path);
+                goto out;
+        }
+
+        entry = glusterd_get_mnt_entry_info (mnt_pt, buff, sizeof (buff),
+                                             &save_entry);
+        if (!entry) {
+                gf_log (this->name, GF_LOG_ERROR, "getting the mount entry for "
+                        "the brick (%s) failed", brick_path);
+                ret = -1;
+                goto out;
+        }
+
+        strcpy (brickinfo->fstype, entry->mnt_type);
+        strcpy (brickinfo->mnt_opts, entry->mnt_opts);
+
+        ret = 0;
+out:
+        GF_FREE (mnt_pt);
+        return ret;
+}
+
+int
+glusterd_get_value_for_vme_entry (struct volopt_map_entry *vme, char **def_val)
+{
+        int                      ret = -1;
+        char                    *key = NULL;
+        xlator_t                *this = NULL;
+        char                    *descr = NULL;
+        char                    *local_def_val = NULL;
+        void                    *dl_handle = NULL;
+        volume_opt_list_t        vol_opt_handle = {{0},};
+
+        this = THIS;
+        GF_ASSERT (this);
+
+        INIT_LIST_HEAD (&vol_opt_handle.list);
+
+        if (_get_xlator_opt_key_from_vme (vme, &key)) {
+                gf_log (this->name, GF_LOG_ERROR, "Failed to get %s key from "
+                        "volume option entry", vme->key);
+                goto out;
+        }
+
+        ret = xlator_volopt_dynload (vme->voltype, &dl_handle, &vol_opt_handle);
+        if (ret) {
+                gf_log (this->name, GF_LOG_ERROR, "xlator_volopt_dynload error "
+                        "(%d)", ret);
+                ret = -2;
+                goto cont;
+        }
+
+        ret = xlator_option_info_list (&vol_opt_handle,key,
+                                       &local_def_val, &descr);
+        if (ret) {
+                /*Swallow Error if option not found*/
+                gf_log (this->name, GF_LOG_ERROR, "Failed to get option for %s "
+                        "key", key);
+                ret = -2;
+                goto cont;
+        }
+        if (!local_def_val)
+                local_def_val = "(null)";
+
+        *def_val = gf_strdup (local_def_val);
+
+cont:
+        if (dl_handle) {
+                dlclose (dl_handle);
+                dl_handle = NULL;
+                vol_opt_handle.given_opt = NULL;
+        }
+        if (key) {
+                _free_xlator_opt_key (key);
+                key = NULL;
+        }
+
+        if (ret)
+                goto out;
+
+out:
+        gf_log (this->name, GF_LOG_DEBUG, "Returning %d", ret);
+        return ret;
+}
+
+int
+glusterd_get_default_val_for_volopt (dict_t *ctx, gf_boolean_t all_opts,
+                                     char *input_key, char *orig_key,
+                                     dict_t *vol_dict, char **op_errstr)
+{
+        struct volopt_map_entry *vme = NULL;
+        int                      ret = -1;
+        int                      count = 0;
+        char                     err_str[PATH_MAX] = "";
+        xlator_t                *this = NULL;
+        char                    *def_val = NULL;
+        char                     dict_key[50] = {0,};
+        gf_boolean_t             key_found = _gf_false;
+
+        this = THIS;
+        GF_ASSERT (this);
+
+        GF_VALIDATE_OR_GOTO (this->name, vol_dict, out);
+
+        /* Check whether key is passed for a single option */
+        if (!all_opts && !input_key) {
+                gf_log (this->name, GF_LOG_ERROR, "Key is NULL");
+                goto out;
+        }
+
+        for (vme = &glusterd_volopt_map[0]; vme->key; vme++) {
+                if (!all_opts && strcmp (vme->key, input_key))
+                        continue;
+
+                key_found = _gf_true;
+                /* First look for the key in the vol_dict, if its not
+                 * present then look for translator default value */
+                ret = dict_get_str (vol_dict, vme->key, &def_val);
+                if (!def_val) {
+                        if (vme->value) {
+                                def_val = vme->value;
+                        } else {
+                                ret = glusterd_get_value_for_vme_entry
+                                         (vme, &def_val);
+                                if (!all_opts && ret)
+                                        goto out;
+                                else if (ret == -2)
+                                        continue;
+                        }
+                }
+                count++;
+                sprintf (dict_key, "key%d", count);
+                ret = dict_set_str(ctx, dict_key, vme->key);
+                if (ret) {
+                        gf_log (this->name, GF_LOG_ERROR, "Failed to "
+                                "set %s in dictionary", vme->key);
+                        goto out;
+                }
+                sprintf (dict_key, "value%d", count);
+                ret = dict_set_dynstr_with_alloc (ctx, dict_key, def_val);
+                if (ret) {
+                        gf_log (this->name, GF_LOG_ERROR, "Failed to "
+                                "set %s for key %s in dictionary", def_val,
+                                vme->key);
+                        goto out;
+                }
+                def_val = NULL;
+                if (!all_opts)
+                        break;
+
+        }
+        if (!all_opts && !key_found)
+                goto out;
+
+        ret = dict_set_int32 (ctx, "count", count);
+        if (ret) {
+                gf_log (this->name, GF_LOG_ERROR, "Failed to set count "
+                        "in dictionary");
+        }
+
+out:
+        if (ret && !all_opts && !key_found) {
+                snprintf (err_str, sizeof (err_str),
+                          "option %s does not exist", orig_key);
+                *op_errstr = gf_strdup (err_str);
+        }
+        gf_log (this->name, GF_LOG_DEBUG, "Returning %d", ret);
+        return ret;
+}
+
+int
+glusterd_get_volopt_content (dict_t * ctx, gf_boolean_t xml_out)
+{
+        void                    *dl_handle = NULL;
+        volume_opt_list_t        vol_opt_handle = {{0},};
+        char                    *key = NULL;
+        struct volopt_map_entry *vme = NULL;
+        int                      ret = -1;
+        char                    *def_val = NULL;
+        char                    *descr = NULL;
+        char                     output_string[51200] = {0, };
+        char                    *output = NULL;
+        char                     tmp_str[2048] = {0, };
+#if (HAVE_LIB_XML)
+        xmlTextWriterPtr         writer = NULL;
+        xmlBufferPtr             buf = NULL;
+
+        if (xml_out) {
+                ret = init_sethelp_xml_doc (&writer, &buf);
+                if (ret) /*logging done in init_xml_lib*/
+                        goto out;
+        }
+#endif
+
+        INIT_LIST_HEAD (&vol_opt_handle.list);
+
+        for (vme = &glusterd_volopt_map[0]; vme->key; vme++) {
+
+                if ((vme->type == NO_DOC) || (vme->type == GLOBAL_NO_DOC))
+                        continue;
+
+                if (vme->description) {
+                        descr = vme->description;
+                        def_val = vme->value;
+                } else {
+                        if (_get_xlator_opt_key_from_vme (vme, &key)) {
+                                gf_log ("glusterd", GF_LOG_DEBUG, "Failed to "
+                                        "get %s key from volume option entry",
+                                        vme->key);
+                                goto out; /*Some error while geting key*/
+                        }
+
+                        ret = xlator_volopt_dynload (vme->voltype,
+                                                     &dl_handle,
+                                                     &vol_opt_handle);
+
+                        if (ret) {
+                                gf_log ("glusterd", GF_LOG_DEBUG,
+                                        "xlator_volopt_dynload error(%d)", ret);
+                                ret = 0;
+                                goto cont;
+                        }
+
+                        ret = xlator_option_info_list (&vol_opt_handle, key,
+                                                       &def_val, &descr);
+                        if (ret) { /*Swallow Error i.e if option not found*/
+                                gf_log ("glusterd", GF_LOG_DEBUG,
+                                        "Failed to get option for %s key", key);
+                                ret = 0;
+                                goto cont;
+                        }
+                }
+
+                if (xml_out) {
+#if (HAVE_LIB_XML)
+                        if (xml_add_volset_element (writer,vme->key,
+                                                    def_val, descr)) {
+                                ret = -1;
+                                goto cont;
+                        }
+#else
+                        gf_log ("glusterd", GF_LOG_ERROR, "Libxml not present");
+#endif
+                } else {
+                        snprintf (tmp_str, sizeof (tmp_str), "Option: %s\nDefault "
+                                        "Value: %s\nDescription: %s\n\n",
+                                        vme->key, def_val, descr);
+                        strcat (output_string, tmp_str);
+                }
+cont:
+                if (dl_handle) {
+                        dlclose (dl_handle);
+                        dl_handle = NULL;
+                        vol_opt_handle.given_opt = NULL;
+                }
+                if (key) {
+                        _free_xlator_opt_key (key);
+                        key = NULL;
+                }
+                if (ret)
+                        goto out;
+        }
+
+#if (HAVE_LIB_XML)
+        if ((xml_out) &&
+            (ret = end_sethelp_xml_doc (writer)))
+                goto out;
+#else
+        if (xml_out)
+                gf_log ("glusterd", GF_LOG_ERROR, "Libxml not present");
+#endif
+
+        if (!xml_out)
+                output = gf_strdup (output_string);
+        else
+#if (HAVE_LIB_XML)
+                output = gf_strdup ((char *)buf->content);
+#else
+                gf_log ("glusterd", GF_LOG_ERROR, "Libxml not present");
+#endif
+
+        if (NULL == output) {
+                ret = -1;
+                goto out;
+        }
+
+        ret = dict_set_dynstr (ctx, "help-str", output);
+out:
+        gf_log ("glusterd", GF_LOG_DEBUG, "Returning %d", ret);
+        return ret;
 }

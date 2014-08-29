@@ -194,6 +194,7 @@ struct glusterd_brickinfo {
         char               mount_dir[PATH_MAX];
         char               brick_id[1024];/*Client xlator name, AFR changelog name*/
         char               fstype [NAME_MAX]; /* Brick file-system type */
+        char               mnt_opts [1024]; /* Brick mount options */
         struct list_head   brick_list;
         uuid_t             uuid;
         int                port;
@@ -370,6 +371,7 @@ struct glusterd_volinfo_ {
         char                     *logdir;
 
         dict_t                   *gsync_slaves;
+        dict_t                   *gsync_active_slaves;
 
         int                       decommission_in_progress;
         xlator_t                 *xl;
@@ -465,7 +467,6 @@ enum glusterd_vol_comp_status_ {
         GLUSTERD_VOL_COMP_RJT,
 };
 
-#define GLUSTERD_DEFAULT_WORKDIR "/var/lib/glusterd"
 #define GLUSTERD_DEFAULT_PORT    GF_DEFAULT_BASE_PORT
 #define GLUSTERD_INFO_FILE      "glusterd.info"
 #define GLUSTERD_VOLUME_QUOTA_CONFIG "quota.conf"

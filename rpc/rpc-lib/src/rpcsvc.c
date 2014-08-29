@@ -107,7 +107,7 @@ out:
 
 rpcsvc_vector_sizer
 rpcsvc_get_program_vector_sizer (rpcsvc_t *svc, uint32_t prognum,
-                                 uint32_t progver, uint32_t procnum)
+                                 uint32_t progver, int procnum)
 {
         rpcsvc_program_t        *program = NULL;
         char                    found    = 0;
@@ -624,30 +624,32 @@ rpcsvc_handle_rpc_call (rpcsvc_t *svc, rpc_transport_t *trans,
                 drc = req->svc->drc;
 
                 LOCK (&drc->lock);
-                reply = rpcsvc_drc_lookup (req);
+                {
+                        reply = rpcsvc_drc_lookup (req);
 
-                /* retransmission of completed request, send cached reply */
-                if (reply && reply->state == DRC_OP_CACHED) {
-                        gf_log (GF_RPCSVC, GF_LOG_INFO, "duplicate request:"
-                                " XID: 0x%x", req->xid);
-                        ret = rpcsvc_send_cached_reply (req, reply);
-                        drc->cache_hits++;
-                        UNLOCK (&drc->lock);
-                        goto out;
+                        /* retransmission of completed request, send cached reply */
+                        if (reply && reply->state == DRC_OP_CACHED) {
+                                gf_log (GF_RPCSVC, GF_LOG_INFO, "duplicate request:"
+                                        " XID: 0x%x", req->xid);
+                                ret = rpcsvc_send_cached_reply (req, reply);
+                                drc->cache_hits++;
+                                UNLOCK (&drc->lock);
+                                goto out;
 
-                } /* retransmitted request, original op in transit, drop it */
-                else if (reply && reply->state == DRC_OP_IN_TRANSIT) {
-                        gf_log (GF_RPCSVC, GF_LOG_INFO, "op in transit,"
-                                " discarding. XID: 0x%x", req->xid);
-                        ret = 0;
-                        drc->intransit_hits++;
-                        rpcsvc_request_destroy (req);
-                        UNLOCK (&drc->lock);
-                        goto out;
+                        } /* retransmitted request, original op in transit, drop it */
+                        else if (reply && reply->state == DRC_OP_IN_TRANSIT) {
+                                gf_log (GF_RPCSVC, GF_LOG_INFO, "op in transit,"
+                                        " discarding. XID: 0x%x", req->xid);
+                                ret = 0;
+                                drc->intransit_hits++;
+                                rpcsvc_request_destroy (req);
+                                UNLOCK (&drc->lock);
+                                goto out;
 
-                } /* fresh request, cache it as in-transit and proceed */
-                else {
-                        ret = rpcsvc_cache_request (req);
+                        } /* fresh request, cache it as in-transit and proceed */
+                        else {
+                                ret = rpcsvc_cache_request (req);
+                        }
                 }
                 UNLOCK (&drc->lock);
         }
