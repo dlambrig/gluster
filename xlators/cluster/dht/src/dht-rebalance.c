@@ -896,6 +896,9 @@ dht_migrate_file (xlator_t *this, loc_t *loc, xlator_t *from, xlator_t *to,
         tmp_loc.inode = inode_ref (loc->inode);
         uuid_copy (tmp_loc.gfid, loc->gfid);
 
+        // DAN
+        tmp_loc.path = gf_strdup(loc->path);
+
         ret = syncop_inodelk (from, DHT_FILE_MIGRATE_DOMAIN, &tmp_loc, F_SETLKW,
                               &flock, NULL, NULL);
         if (ret < 0) {

@@ -174,26 +174,67 @@ dht_layout_search (xlator_t *this, dht_layout_t *layout, const char *name)
         xlator_t  *subvol = NULL;
         int        i = 0;
         int        ret = 0;
-#if 0
         void      *value;
-        char      *match;
+        char      *match = NULL;
 
         ret = dict_get_ptr (this->options, "rule", &value);
         if (!ret) {
-
+                subvol = layout->list[0].xlator;
+                match = (char *) value;
+                gf_log(this->name, GF_LOG_INFO, "rule %s on name %s %s", match, name, subvol->name);
+#if 0
                 if (strcmp(name,"hot")==0)
                         return layout->list[0].xlator;
 
-                match = (char *) value;
-                gf_log(this->name, GF_LOG_INFO, "rule %s on name %s", match, name);
                 if (!fnmatch(match, name, 0)) {
                         subvol = layout->list[0].xlator;
                 } else {
                         subvol = layout->list[1].xlator;
                 }
+#endif
+
+                goto out;
+        } else {
+                subvol = layout->list[1].xlator;
+                gf_log(this->name, GF_LOG_INFO, "rule %s on name %s %s", match, name, subvol->name);
                 goto out;
         }
-#endif
+
+        ret = dht_hash_compute (this, layout->type, name, &hash);
+        if (ret != 0) {
+                gf_log (this->name, GF_LOG_WARNING,
+                        "hash computation failed for type=%d name=%s",
+
+
+                        layout->type, name);
+                goto out;
+        }
+
+        for (i = 0; i < layout->cnt; i++) {
+                if (layout->list[i].start <= hash
+                    && layout->list[i].stop >= hash) {
+                        subvol = layout->list[i].xlator;
+                        break;
+                }
+        }
+
+        if (!subvol) {
+                gf_log (this->name, GF_LOG_WARNING,
+                        "no subvolume for hash (value) = %u", hash);
+        }
+
+out:
+        return subvol;
+}
+
+xlator_t *
+dht_layout_search_old (xlator_t *this, dht_layout_t *layout, const char *name)
+{
+        uint32_t   hash = 0;
+        xlator_t  *subvol = NULL;
+        int        i = 0;
+        int        ret = 0;
+
         ret = dht_hash_compute (this, layout->type, name, &hash);
         if (ret != 0) {
                 gf_log (this->name, GF_LOG_WARNING,

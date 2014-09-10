@@ -3044,7 +3044,18 @@ dht_setxattr (call_frame_t *frame, xlator_t *this,
                 if (conf->decommission_in_progress)
                         forced_rebalance = GF_DHT_MIGRATE_HARDLINK;
 
-                local->rebalance.target_node = dht_subvol_get_hashed (this, loc);
+                // DAN another hack
+                if (! dict_get_ptr (this->options, "rule", (void**)&value)) {
+                        if (conf->subvolumes[0] == local->cached_subvol)
+                                local->rebalance.target_node = conf->subvolumes[1];
+                        else
+                                local->rebalance.target_node = conf->subvolumes[0];
+                        local->loc.parent = inode_parent(loc->inode, NULL, NULL);
+                        uuid_copy(local->loc.pargfid, local->loc.parent->gfid);
+                        local->loc.name = strrchr (local->loc.path, '/');
+                } else {
+                        local->rebalance.target_node = dht_subvol_get_hashed (this, loc);
+                }
                 if (!local->rebalance.target_node) {
                         gf_msg (this->name, GF_LOG_ERROR, 0,
                                 DHT_MSG_HASHED_SUBVOL_GET_FAILED,
@@ -3089,7 +3100,7 @@ dht_setxattr (call_frame_t *frame, xlator_t *this,
                 local->key = gf_strdup (value);
                 local->call_cnt = conf->subvolume_cnt;
 
-                for (i = 0 ; i < conf->subvolume_cnt; i++) {
+                for (i = 0 ; i < conf->subvolume_cnt; i++) { 
                         /* Get the pathinfo, and then compare */
                         STACK_WIND (frame, dht_checking_pathinfo_cbk,
                                     conf->subvolumes[i],
@@ -3649,7 +3660,7 @@ dht_readdirp_cbk (call_frame_t *frame, void *cookie, xlator_t *this, int op_ret,
 
                         }
 
-                        hashed_subvol = dht_layout_search (this, layout, \
+                        hashed_subvol = dht_layout_search_old (this, layout, \
                                                            orig_entry->d_name);
 
                         if (prev->this == hashed_subvol)
@@ -3758,10 +3769,27 @@ done:
                         }
                 }
 
-                STACK_WIND (frame, dht_readdirp_cbk,
-                            next_subvol, next_subvol->fops->readdirp,
-                            local->fd, local->size, next_offset,
-                            local->xattr);
+                if (strcmp(next_subvol->type, this->type)==0) { // DAN
+                        uint64_t yvol;
+                        dht_conf_t *subvol_conf = 0;
+
+                        subvol_conf = next_subvol->private;
+
+                        if (next_offset != 0)
+                                dht_itransform (this, subvol_conf->subvolumes[subvol_conf->subvolume_cnt-1], next_offset, &yvol);
+                        else
+                                yvol = next_offset;
+
+                        STACK_WIND (frame, dht_readdirp_cbk,
+                                    next_subvol, next_subvol->fops->readdirp,
+                                    local->fd, local->size, yvol,
+                                    local->xattr);
+                } else {
+                        STACK_WIND (frame, dht_readdirp_cbk,
+                                    next_subvol, next_subvol->fops->readdirp,
+                                    local->fd, local->size, next_offset,
+                                    local->xattr);
+                }
                 return 0;
         }
 
@@ -3781,7 +3809,7 @@ unwind:
 int
 dht_readdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                  int op_ret, int op_errno, gf_dirent_t *orig_entries,
-                 dict_t *xdata)
+                dict_t *xdata)
 {
         dht_local_t  *local = NULL;
         gf_dirent_t   entries;
@@ -3942,11 +3970,23 @@ dht_do_readdir (call_frame_t *frame, xlator_t *this, fd_t *fd, size_t size,
 			}
                 }
 
-                STACK_WIND (frame, dht_readdirp_cbk, xvol, xvol->fops->readdirp,
-                            fd, size, yoff, local->xattr);  // DAN
+                if (strcmp(xvol->type, this->type)==0) { // DAN
+                        dht_conf_t *subvol_conf = 0;
+
+                        subvol_conf = xvol->private;
+
+                        if (xoff != 0)
+                                dht_itransform (this, subvol_conf->subvolumes[subvol_conf->subvolume_cnt-1], yoff, &xoff);
+
+                        STACK_WIND (frame, dht_readdirp_cbk, xvol, xvol->fops->readdirp,
+                                    fd, size, xoff, local->xattr);  // DAN
+                } else {
+                        STACK_WIND (frame, dht_readdirp_cbk, xvol, xvol->fops->readdirp,
+                                    fd, size, yoff, local->xattr);  // DAN
+                }
         } else {
                 STACK_WIND (frame, dht_readdir_cbk, xvol, xvol->fops->readdir,
-                            fd, size, xoff, local->xattr);  // DAN
+                            fd, size, yoff, local->xattr);  // DAN
         }
 
         return 0;
