@@ -187,6 +187,18 @@ afr_index_for_transaction_type (afr_transaction_type type)
         return -1;  /* make gcc happy */
 }
 
+static inline int
+afr_index_from_ia_type (ia_type_t type)
+{
+        switch (type) {
+        case IA_IFDIR:
+                return afr_index_for_transaction_type (AFR_ENTRY_TRANSACTION);
+        case IA_IFREG:
+                return afr_index_for_transaction_type (AFR_DATA_TRANSACTION);
+        default: return -1;
+        }
+}
+
 typedef struct {
         loc_t                   loc;
         char                    *basename;
@@ -764,6 +776,9 @@ int32_t
 afr_notify (xlator_t *this, int32_t event, void *data, void *data2);
 
 int
+xattr_is_equal (dict_t *this, char *key1, data_t *value1, void *data);
+
+int
 afr_init_entry_lockee (afr_entry_lockee_t *lockee, afr_local_t *local,
                        loc_t *loc, char *basename, int child_count);
 
@@ -934,6 +949,10 @@ afr_matrix_cleanup (int32_t **pending, unsigned int m);
 
 int32_t**
 afr_matrix_create (unsigned int m, unsigned int n);
+
+int**
+afr_mark_pending_changelog (afr_private_t *priv, unsigned char *pending,
+                            dict_t *xattr, ia_type_t iat);
 
 void
 afr_filter_xattrs (dict_t *xattr);

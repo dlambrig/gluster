@@ -312,8 +312,7 @@ afr_selfheal_extract_xattr (xlator_t *this, struct afr_reply *replies,
  */
 
 int
-afr_selfheal_find_direction (call_frame_t *frame, xlator_t *this,
-			     struct afr_reply *replies,
+afr_selfheal_find_direction (xlator_t *this, struct afr_reply *replies,
 			     afr_transaction_type type, unsigned char *locked_on,
 			     unsigned char *sources, unsigned char *sinks)
 {
@@ -415,7 +414,7 @@ afr_selfheal_discover_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 inode_t *
 afr_selfheal_unlocked_lookup_on (call_frame_t *frame, inode_t *parent,
 				 const char *name, struct afr_reply *replies,
-				 unsigned char *lookup_on)
+				 unsigned char *lookup_on, dict_t *xattr)
 {
 	loc_t loc = {0, };
 	dict_t *xattr_req = NULL;
@@ -429,6 +428,9 @@ afr_selfheal_unlocked_lookup_on (call_frame_t *frame, inode_t *parent,
 	xattr_req = dict_new ();
 	if (!xattr_req)
 		return NULL;
+
+        if (xattr)
+                dict_copy (xattr, xattr_req);
 
 	if (afr_xattr_req_prepare (frame->this, xattr_req) != 0) {
 		dict_destroy (xattr_req);
@@ -456,7 +458,6 @@ afr_selfheal_unlocked_lookup_on (call_frame_t *frame, inode_t *parent,
 
 	return inode;
 }
-
 
 int
 afr_selfheal_unlocked_discover_on (call_frame_t *frame, inode_t *inode,
@@ -974,6 +975,43 @@ afr_frame_create (xlator_t *this)
 	return frame;
 }
 
+int
+afr_selfheal_newentry_mark (call_frame_t *frame, xlator_t *this, inode_t *inode,
+			    int source, struct afr_reply *replies,
+			    unsigned char *sources, unsigned char *newentry)
+{
+	int ret = 0;
+	int i = 0;
+	afr_private_t *priv = NULL;
+	dict_t *xattr = NULL;
+	int **changelog = NULL;
+
+	priv = this->private;
+
+	uuid_copy (inode->gfid, replies[source].poststat.ia_gfid);
+
+	xattr = dict_new();
+	if (!xattr)
+		return -ENOMEM;
+
+        changelog = afr_mark_pending_changelog (priv, newentry, xattr,
+                                            replies[source].poststat.ia_type);
+
+        if (!changelog)
+                goto out;
+
+	for (i = 0; i < priv->child_count; i++) {
+		if (!sources[i])
+			continue;
+		afr_selfheal_post_op (frame, this, inode, i, xattr);
+	}
+out:
+        if (changelog)
+                afr_matrix_cleanup (changelog, priv->child_count);
+        if (xattr)
+                dict_unref (xattr);
+	return ret;
+}
 
 /*
  * This is the entry point for healing a given GFID

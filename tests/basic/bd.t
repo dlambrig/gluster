@@ -71,6 +71,15 @@ function volume_type()
         getfattr -n volume.type $M0/. --only-values --absolute-names -e text
 }
 
+case $OSTYPE in
+NetBSD)
+        echo "Skip test on LVM which is not available on NetBSD" >&2
+        exit 0
+        ;;
+*)      
+        ;;
+esac 
+
 TEST glusterd
 TEST pidof glusterd
 configure
@@ -83,7 +92,7 @@ EXPECT 'Created' volinfo_field $V0 'Status';
 TEST $CLI volume start $V0;
 EXPECT 'Started' volinfo_field $V0 'Status'
 
-TEST glusterfs --volfile-id=/$V0 --volfile-server=$H0 $M0
+TEST $GFS --volfile-id=/$V0 --volfile-server=$H0 $M0;
 EXPECT '1' volume_type
 
 ## Create posix file

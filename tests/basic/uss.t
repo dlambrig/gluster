@@ -19,7 +19,7 @@ TEST $CLI volume create $V0 $H0:$L1 $H0:$L2 $H0:$L3;
 
 TEST $CLI volume start $V0;
 
-TEST glusterfs --volfile-server=$H0 --volfile-id=$V0 $M0;
+TEST $GFS --volfile-server=$H0 --volfile-id=$V0 $M0;
 
 for i in {1..10} ; do echo "file" > $M0/file$i ; done
 
@@ -46,7 +46,7 @@ TEST $CLI volume set $V0 features.uss enable;
 
 EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0
 
-TEST glusterfs --volfile-server=$H0 --volfile-id=$V0 $M0;
+TEST $GFS --volfile-server=$H0 --volfile-id=$V0 $M0;
 
 # test 15
 TEST ls $M0/.snaps;
@@ -245,5 +245,21 @@ TEST fd_close $fd3;
 
 ## Before killing daemon to avoid deadlocks
 EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" umount_nfs $N0
+
+#test 131
+TEST $CLI snapshot create snap5 $V0
+TEST ls $M0/.history;
+
+function count_snaps
+{
+    local mount_point=$1;
+    local num_snaps;
+
+    num_snaps=$(ls $mount_point/.history | wc -l);
+
+    echo $num_snaps;
+}
+
+EXPECT_WITHIN 30 "5" count_snaps $M0;
 
 cleanup;

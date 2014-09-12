@@ -621,15 +621,49 @@ dht_rename_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         if (local->linked == _gf_true)
                 FRAME_SU_UNDO (frame, dht_local_t);
+
+        /* It is a critical failure iff we fail to rename the cached file
+         * if the rename of the linkto failed, it is not a critical failure,
+         * and we do not want to lose the created hard link for the new
+         * name as that could have been read by other clients.
+         *
+         * NOTE: If another client is attempting the same oldname -> newname
+         * rename, and finds both file names as existing, and are hard links
+         * to each other, then FUSE would send in an unlink for oldname. In
+         * this time duration if we treat the linkto as a critical error and
+         * unlink the newname we created, we would have effectively lost the
+         * file to rename operations.
+         *
+         * Repercussions of treating this as a non-critical error is that
+         * we could leave behind a stale linkto file and/or not create the new
+         * linkto file, the second case would be rectified by a subsequent
+         * lookup, the first case by a rebalance, like for all stale linkto
+         * files */
+
         if (op_ret == -1) {
-                gf_msg (this->name, GF_LOG_WARNING, op_errno,
-                        DHT_MSG_RENAME_FAILED,
-                        "%s: Rename on %s failed, (gfid = %s) ",
-                        local->loc.path, prev->this->name,
-                        local->loc.inode? uuid_utoa(local->loc.inode->gfid):"");
-                local->op_ret   = op_ret;
-                local->op_errno = op_errno;
-                goto cleanup;
+                /* Critical failure: unable to rename the cached file */
+                if (src_cached == dst_cached) {
+                        gf_msg (this->name, GF_LOG_WARNING, op_errno,
+                                DHT_MSG_RENAME_FAILED,
+                                "%s: Rename on %s failed, (gfid = %s) ",
+                                local->loc.path, prev->this->name,
+                                local->loc.inode ?
+                                uuid_utoa(local->loc.inode->gfid):"");
+                        local->op_ret   = op_ret;
+                        local->op_errno = op_errno;
+                        goto cleanup;
+                } else {
+                        /* Non-critical failure, unable to rename the linkto
+                         * file
+                         */
+                        gf_msg (this->name, GF_LOG_INFO, op_errno,
+                                DHT_MSG_RENAME_FAILED,
+                                "%s: Rename (linkto file) on %s failed, "
+                                "(gfid = %s) ",
+                                local->loc.path, prev->this->name,
+                                local->loc.inode ?
+                                uuid_utoa(local->loc.inode->gfid):"");
+                }
         }
 
         if ((src_cached == dst_cached) && (dst_hashed != dst_cached)) {
@@ -814,9 +848,8 @@ dht_do_rename (call_frame_t *frame)
         return 0;
 }
 
-
 int
-dht_rename_links_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+dht_rename_link_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                       int32_t op_ret, int32_t op_errno,
                       inode_t *inode, struct iatt *stbuf,
                       struct iatt *preparent, struct iatt *postparent,
@@ -824,8 +857,6 @@ dht_rename_links_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 {
         dht_local_t  *local = NULL;
         call_frame_t *prev = NULL;
-        int           this_call_cnt  = 0;
-
 
         local = frame->local;
         prev = cookie;
@@ -835,24 +866,15 @@ dht_rename_links_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                               "link/file on %s failed (%s)",
                               prev->this->name, strerror (op_errno));
                 local->op_ret   = -1;
-                if (op_errno != ENOENT) {
-                        local->op_errno = op_errno;
-                        if (prev->this == local->src_cached) {
-                                local->added_link = _gf_false;
-                        }
-                }
-        } else if (local->src_cached == prev->this) {
-                /* merge of attr returned only from linkfile creation */
+                local->op_errno = op_errno;
+                local->added_link = _gf_false;
+        } else
                 dht_iatt_merge (this, &local->stbuf, stbuf, prev->this);
-        }
 
-        this_call_cnt = dht_frame_return (frame);
-        if (is_last_call (this_call_cnt)) {
-                if (local->op_ret == -1)
-                        goto cleanup;
+        if (local->op_ret == -1)
+                goto cleanup;
 
-                dht_do_rename (frame);
-        }
+        dht_do_rename (frame);
 
         return 0;
 
@@ -862,6 +884,66 @@ cleanup:
         return 0;
 }
 
+int
+dht_rename_linkto_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                      int32_t op_ret, int32_t op_errno,
+                      inode_t *inode, struct iatt *stbuf,
+                      struct iatt *preparent, struct iatt *postparent,
+                      dict_t *xdata)
+{
+        dht_local_t     *local = NULL;
+        call_frame_t    *prev = NULL;
+        xlator_t        *src_cached = NULL;
+        dict_t          *xattr = NULL;
+
+        DHT_MARK_FOP_INTERNAL (xattr);
+
+        local = frame->local;
+        prev = cookie;
+
+        src_cached = local->src_cached;
+
+        if (op_ret == -1) {
+                gf_msg_debug (this->name, 0,
+                              "link/file on %s failed (%s)",
+                              prev->this->name, strerror (op_errno));
+                local->op_ret = -1;
+                local->op_errno = op_errno;
+        }
+
+        /* If linkto creation failed move to failure cleanup code,
+        * instead of continuing with creating the link file */
+        if (local->op_ret != 0) {
+                goto cleanup;
+        }
+
+        gf_msg_trace (this->name, 0,
+                      "link %s => %s (%s)", local->loc.path,
+                      local->loc2.path, src_cached->name);
+        if (uuid_compare (local->loc.pargfid,
+                                local->loc2.pargfid) == 0) {
+                DHT_MARKER_DONT_ACCOUNT(xattr);
+        }
+
+        local->added_link = _gf_true;
+
+        STACK_WIND (frame, dht_rename_link_cbk,
+                    src_cached, src_cached->fops->link,
+                    &local->loc, &local->loc2, xattr);
+
+        if (xattr)
+                dict_unref (xattr);
+
+        return 0;
+
+cleanup:
+        dht_rename_cleanup (frame);
+
+        if (xattr)
+                dict_unref (xattr);
+
+        return 0;
+}
 
 int
 dht_rename_unlink_links_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
@@ -944,45 +1026,55 @@ dht_rename_create_links (call_frame_t *frame)
                 return 0;
         }
 
-        if (dst_hashed != src_hashed && dst_hashed != src_cached)
+        if (src_cached != dst_hashed) {
+                /* needed to create the link file */
                 call_cnt++;
+                if (dst_hashed != src_hashed)
+                        /* needed to create the linkto file */
+                        call_cnt ++;
+        }
 
-        if (src_cached != dst_hashed)
-                call_cnt++;
-
-        local->call_cnt = call_cnt;
-
-        if (dst_hashed != src_hashed && dst_hashed != src_cached) {
+        /* We should not have any failures post the link creation, as this
+         * introduces the newname into the namespace. Clients could have cached
+         * the existence of the newname and may start taking actions based on
+         * the same. Hence create the linkto first, and then attempt the link.
+         *
+         * NOTE: If another client is attempting the same oldname -> newname
+         * rename, and finds both file names as existing, and are hard links
+         * to each other, then FUSE would send in an unlink for oldname. In
+         * this time duration if we treat the linkto as a critical error and
+         * unlink the newname we created, we would have effectively lost the
+         * file to rename operations. */
+        if (dst_hashed != src_hashed && src_cached != dst_hashed) {
                 gf_msg_trace (this->name, 0,
                               "linkfile %s @ %s => %s",
                               local->loc.path, dst_hashed->name,
                               src_cached->name);
 
                 memcpy (local->gfid, local->loc.inode->gfid, 16);
-		dht_linkfile_create (frame, dht_rename_links_cbk, this,
-				     src_cached, dst_hashed, &local->loc);
-	}
-
-	if (src_cached != dst_hashed) {
+                dht_linkfile_create (frame, dht_rename_linkto_cbk, this,
+                                     src_cached, dst_hashed, &local->loc);
+        } else if (src_cached != dst_hashed) {
                 dict_t *xattr_new = NULL;
 
                 xattr_new = dict_copy_with_ref (xattr, NULL);
 
-		gf_msg_trace (this->name, 0,
+                gf_msg_trace (this->name, 0,
                               "link %s => %s (%s)", local->loc.path,
-			      local->loc2.path, src_cached->name);
+                              local->loc2.path, src_cached->name);
                 if (uuid_compare (local->loc.pargfid,
                                   local->loc2.pargfid) == 0) {
                         DHT_MARKER_DONT_ACCOUNT(xattr_new);
                 }
 
                 local->added_link = _gf_true;
-		STACK_WIND (frame, dht_rename_links_cbk,
-			    src_cached, src_cached->fops->link,
-			    &local->loc, &local->loc2, xattr_new);
+
+                STACK_WIND (frame, dht_rename_link_cbk,
+                            src_cached, src_cached->fops->link,
+                            &local->loc, &local->loc2, xattr_new);
 
                 dict_unref (xattr_new);
-	}
+        }
 
 nolinks:
         if (!call_cnt) {
@@ -1245,12 +1337,11 @@ dht_rename (call_frame_t *frame, xlator_t *this,
         local->dst_hashed = dst_hashed;
         local->dst_cached = dst_cached;
 
-        gf_msg_debug (this->name, 0,
-                      "renaming %s (hash=%s/cache=%s) => %s"
-                      " (hash=%s/cache=%s)",
-                      oldloc->path, src_hashed->name, src_cached->name,
-                      newloc->path, dst_hashed->name,
-                      dst_cached ? dst_cached->name : "<nul>");
+        gf_log (this->name, GF_LOG_INFO,
+                "renaming %s (hash=%s/cache=%s) => %s (hash=%s/cache=%s)",
+                oldloc->path, src_hashed->name, src_cached->name,
+                newloc->path, dst_hashed->name,
+                dst_cached ? dst_cached->name : "<nul>");
 
         if (IA_ISDIR (oldloc->inode->ia_type)) {
                 dht_rename_dir (frame, this);

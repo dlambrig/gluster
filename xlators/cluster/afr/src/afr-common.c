@@ -670,6 +670,12 @@ afr_xattr_req_prepare (xlator_t *this, dict_t *xattr_req)
                         "query flag");
         }
 
+        ret = dict_set_int32 (xattr_req, "list-xattr", 1);
+        if (ret) {
+                gf_log (this->name, GF_LOG_DEBUG,
+                        "Unable to set list-xattr in dict ");
+        }
+
 	return ret;
 }
 
@@ -1140,6 +1146,73 @@ afr_handle_quota_size (call_frame_t *frame, xlator_t *this)
 	}
 }
 
+static char *afr_ignore_xattrs[] = {
+        GLUSTERFS_OPEN_FD_COUNT,
+        GLUSTERFS_PARENT_ENTRYLK,
+        GLUSTERFS_ENTRYLK_COUNT,
+        GLUSTERFS_INODELK_COUNT,
+        GF_SELINUX_XATTR_KEY,
+        QUOTA_SIZE_KEY,
+        NULL
+};
+
+static  gf_boolean_t
+afr_lookup_xattr_ignorable (char *key)
+{
+        int i = 0;
+
+        if (!strncmp (key, AFR_XATTR_PREFIX, strlen(AFR_XATTR_PREFIX)))
+                return _gf_true;
+        for (i = 0; afr_ignore_xattrs[i]; i++) {
+                if (!strcmp (key, afr_ignore_xattrs[i]))
+                       return _gf_true;
+        }
+        return _gf_false;
+}
+
+int
+xattr_is_equal (dict_t *this, char *key1, data_t *value1, void *data)
+{
+        dict_t *xattr2 = (dict_t *)data;
+        data_t *value2 = NULL;
+
+        if (afr_lookup_xattr_ignorable (key1))
+                return 0;
+
+        value2 = dict_get (xattr2, key1);
+        if (!value2)
+                return -1;
+
+        if (value1->len != value2->len)
+                return -1;
+        if(memcmp(value1->data, value2->data, value1->len))
+                return -1;
+        else
+                return 0;
+
+}
+
+/* To conclude that both dicts are equal, we need to check if
+ * 1) For every key-val pair in dict1, a match is present in dict2
+ * 2) For every key-val pair in dict2, a match is present in dict1
+ * We need to do both because ignoring glusterfs' internal xattrs
+ * happens only in xattr_is_equal().
+ */
+static gf_boolean_t
+dicts_are_equal (dict_t *dict1, dict_t *dict2)
+{
+        int ret = 0;
+
+        ret = dict_foreach (dict1, xattr_is_equal, dict2);
+        if (ret == -1)
+                return _gf_false;
+
+        ret = dict_foreach (dict2, xattr_is_equal, dict1);
+        if (ret == -1)
+                 return _gf_false;
+
+        return _gf_true;
+}
 
 static void
 afr_lookup_done (call_frame_t *frame, xlator_t *this)
@@ -1219,9 +1292,8 @@ afr_lookup_done (call_frame_t *frame, xlator_t *this)
 			continue;
 		}
 
-		if (!uuid_compare (replies[i].poststat.ia_gfid,
-				   read_gfid))
-			continue;
+		if (!uuid_compare (replies[i].poststat.ia_gfid, read_gfid))
+                        continue;
 
 		can_interpret = _gf_false;
 
@@ -1438,10 +1510,126 @@ afr_attempt_local_discovery (xlator_t *this, int32_t child_index)
                            &tmploc, GF_XATTR_PATHINFO_KEY, NULL);
 }
 
+int
+afr_lookup_sh_metadata_wrap (void *opaque)
+{
+        call_frame_t *frame       = opaque;
+        afr_local_t  *local       = NULL;
+        xlator_t     *this        = NULL;
+        inode_t      *inode       = NULL;
+        afr_private_t *priv       = NULL;
+        struct afr_reply *replies = NULL;
+        int i= 0, first = -1;
+
+        local = frame->local;
+        this  = frame->this;
+        priv  = this->private;
+        replies = local->replies;
+
+        for (i =0; i < priv->child_count; i++) {
+                if(!replies[i].valid || replies[i].op_ret == -1)
+                        continue;
+                first = i;
+                break;
+        }
+        if (first == -1)
+                goto out;
+
+        inode = afr_inode_link (local->inode,&replies[first].poststat);
+        if(!inode)
+                goto out;
+
+        afr_selfheal_metadata (frame, this, inode);
+        inode_forget (inode, 1);
+        inode_unref (inode);
+
+        afr_local_replies_wipe (local, this->private);
+        inode = afr_selfheal_unlocked_lookup_on (frame, local->loc.parent,
+                                                 local->loc.name, local->replies,
+                                                 local->child_up, NULL);
+        if (inode)
+                inode_unref (inode);
+out:
+        afr_lookup_done (frame, this);
+
+        return 0;
+}
+
+static gf_boolean_t
+afr_can_start_metadata_self_heal(call_frame_t *frame, xlator_t *this)
+{
+        afr_local_t *local = NULL;
+        afr_private_t *priv = NULL;
+        struct afr_reply *replies = NULL;
+        int i = 0, first = -1;
+        gf_boolean_t start = _gf_false;
+        struct iatt stbuf = {0, };
+
+        local = frame->local;
+        replies = local->replies;
+        priv = this->private;
+
+        for (i = 0; i < priv->child_count; i++) {
+                if(!replies[i].valid || replies[i].op_ret == -1)
+                        continue;
+                if (first == -1) {
+                        first = i;
+                        stbuf = replies[i].poststat;
+                        continue;
+                }
+
+                if (uuid_compare (stbuf.ia_gfid, replies[i].poststat.ia_gfid)) {
+                        start = _gf_false;
+                        break;
+                }
+                if (!IA_EQUAL (stbuf, replies[i].poststat, type)) {
+                        start = _gf_false;
+                        break;
+                }
+
+                /*Check if iattrs need heal*/
+                if ((!IA_EQUAL (stbuf, replies[i].poststat, uid)) ||
+                    (!IA_EQUAL (stbuf, replies[i].poststat, gid)) ||
+                    (!IA_EQUAL (stbuf, replies[i].poststat, prot))) {
+                        start = _gf_true;
+                        continue;
+                }
+
+                /*Check if xattrs need heal*/
+                if (!dicts_are_equal (replies[first].xdata, replies[i].xdata))
+                        start = _gf_true;
+        }
+
+        return start;
+}
+
+int
+afr_lookup_metadata_heal_check (call_frame_t *frame, xlator_t *this)
+
+{
+        call_frame_t *heal = NULL;
+        int ret            = 0;
+
+        if (!afr_can_start_metadata_self_heal (frame, this))
+                goto out;
+
+        heal = copy_frame (frame);
+        if (heal)
+                heal->root->pid = GF_CLIENT_PID_AFR_SELF_HEALD;
+        ret = synctask_new (this->ctx->env, afr_lookup_sh_metadata_wrap,
+                            afr_refresh_selfheal_done, heal, frame);
+        if(ret)
+                goto out;
+        return ret;
+out:
+        afr_lookup_done (frame, this);
+        return ret;
+}
 
 int
 afr_lookup_selfheal_wrap (void *opaque)
 {
+        int ret = 0;
 	call_frame_t *frame = opaque;
 	afr_local_t *local = NULL;
 	xlator_t *this = NULL;
@@ -1450,19 +1638,25 @@ afr_lookup_selfheal_wrap (void *opaque)
 	local = frame->local;
 	this = frame->this;
 
-	afr_selfheal_name (frame->this, local->loc.pargfid, local->loc.name,
-                           &local->cont.lookup.gfid_req);
+	ret = afr_selfheal_name (frame->this, local->loc.pargfid,
+                                 local->loc.name, &local->cont.lookup.gfid_req);
+        if (ret == -EIO)
+                goto unwind;
 
         afr_local_replies_wipe (local, this->private);
 
 	inode = afr_selfheal_unlocked_lookup_on (frame, local->loc.parent,
 						 local->loc.name, local->replies,
-						 local->child_up);
+						 local->child_up, NULL);
 	if (inode)
 		inode_unref (inode);
-	afr_lookup_done (frame, this);
 
-	return 0;
+        afr_lookup_metadata_heal_check(frame, this);
+        return 0;
+
+unwind:
+	AFR_STACK_UNWIND (lookup, frame, -1, EIO, NULL, NULL, NULL, NULL);
+        return 0;
 }
 
 
@@ -1513,11 +1707,11 @@ afr_lookup_entry_heal (call_frame_t *frame, xlator_t *this)
 		ret = synctask_new (this->ctx->env, afr_lookup_selfheal_wrap,
 				    afr_refresh_selfheal_done, heal, frame);
 		if (ret)
-			goto lookup_done;
-	} else {
-	lookup_done:
-		afr_lookup_done (frame, this);
+			goto metadata_heal;
+                return ret;
 	}
+metadata_heal:
+        ret = afr_lookup_metadata_heal_check (frame, this);
 
 	return ret;
 }
@@ -3677,4 +3871,39 @@ afr_handle_open_fd_count (call_frame_t *frame, xlator_t *this)
 		return;
 
 	fd_ctx->open_fd_count = local->open_fd_count;
+}
+
+int**
+afr_mark_pending_changelog (afr_private_t *priv, unsigned char *pending,
+                            dict_t *xattr, ia_type_t iat)
+{
+       int i = 0;
+       int **changelog = NULL;
+       int idx = -1;
+       int m_idx = 0;
+       int ret = 0;
+
+       m_idx = afr_index_for_transaction_type (AFR_METADATA_TRANSACTION);
+
+       idx = afr_index_from_ia_type (iat);
+
+       changelog = afr_matrix_create (priv->child_count, AFR_NUM_CHANGE_LOGS);
+       if (!changelog)
+                goto out;
+
+       for (i = 0; i < priv->child_count; i++) {
+               if (!pending[i])
+                       continue;
+
+               changelog[i][m_idx] = hton32(1);
+               if (idx != -1)
+                       changelog[i][idx] = hton32(1);
+       }
+       ret = afr_set_pending_dict (priv, xattr, changelog);
+       if (ret < 0) {
+               afr_matrix_cleanup (changelog, priv->child_count);
+               return NULL;
+       }
+out:
+       return changelog;
 }

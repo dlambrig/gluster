@@ -21,9 +21,8 @@
 
 
 static int
-afr_selfheal_entry_delete (call_frame_t *frame, xlator_t *this, inode_t *dir,
-			   const char *name, inode_t *inode, int child,
-			   struct afr_reply *replies)
+afr_selfheal_entry_delete (xlator_t *this, inode_t *dir, const char *name,
+                           inode_t *inode, int child, struct afr_reply *replies)
 {
 	afr_private_t *priv = NULL;
 	xlator_t *subvol = NULL;
@@ -68,9 +67,10 @@ afr_selfheal_entry_delete (call_frame_t *frame, xlator_t *this, inode_t *dir,
 
 
 int
-afr_selfheal_recreate_entry (call_frame_t *frame, xlator_t *this, int dst,
-			     int source, inode_t *dir, const char *name,
-			     inode_t *inode, struct afr_reply *replies)
+afr_selfheal_recreate_entry (xlator_t *this, int dst, int source, inode_t *dir,
+                             const char *name, inode_t *inode,
+                             struct afr_reply *replies,
+                             unsigned char *newentry)
 {
 	int ret = 0;
 	loc_t loc = {0,};
@@ -81,7 +81,6 @@ afr_selfheal_recreate_entry (call_frame_t *frame, xlator_t *this, int dst,
 	char *linkname = NULL;
 	mode_t mode = 0;
 	struct iatt newent = {0,};
-
 	priv = this->private;
 
 	xdata = dict_new();
@@ -93,8 +92,7 @@ afr_selfheal_recreate_entry (call_frame_t *frame, xlator_t *this, int dst,
 	loc.name = name;
 	loc.inode = inode_ref (inode);
 
-	ret = afr_selfheal_entry_delete (frame, this, dir, name, inode, dst,
-					 replies);
+	ret = afr_selfheal_entry_delete (this, dir, name, inode, dst, replies);
 	if (ret)
 		goto out;
 
@@ -113,6 +111,8 @@ afr_selfheal_recreate_entry (call_frame_t *frame, xlator_t *this, int dst,
 	switch (iatt->ia_type) {
 	case IA_IFDIR:
 		ret = syncop_mkdir (priv->children[dst], &loc, mode, xdata, 0);
+                if (ret == 0)
+                        newentry[dst] = 1;
 		break;
 	case IA_IFLNK:
 		ret = syncop_lookup (priv->children[dst], &srcloc, 0, 0, 0, 0);
@@ -125,7 +125,9 @@ afr_selfheal_recreate_entry (call_frame_t *frame, xlator_t *this, int dst,
 				goto out;
 			ret = syncop_symlink (priv->children[dst], &loc, linkname,
 					      xdata, NULL);
-		}
+                        if (ret == 0)
+                                newentry[dst] = 1;
+                }
 		break;
 	default:
 		ret = dict_set_int32 (xdata, GLUSTERFS_INTERNAL_FOP_KEY, 1);
@@ -133,9 +135,9 @@ afr_selfheal_recreate_entry (call_frame_t *frame, xlator_t *this, int dst,
 			goto out;
 		ret = syncop_mknod (priv->children[dst], &loc, mode,
 				    iatt->ia_rdev, xdata, &newent);
-		if (ret == 0 && iatt->ia_size && !newent.ia_size) {
+		if (ret == 0 && newent.ia_nlink == 1) {
 			/* New entry created. Mark @dst pending on all sources */
-			ret = 1;
+                        newentry[dst] = 1;
 		}
 		break;
 	}
@@ -145,49 +147,6 @@ out:
 		dict_unref (xdata);
 	loc_wipe (&loc);
 	loc_wipe (&srcloc);
-	return ret;
-}
-
-
-static int
-afr_selfheal_newentry_mark (call_frame_t *frame, xlator_t *this, inode_t *inode,
-			    int source, struct afr_reply *replies,
-			    unsigned char *sources, unsigned char *newentry)
-{
-	int ret = 0;
-	int i = 0;
-	afr_private_t *priv = NULL;
-	dict_t *xattr = NULL;
-	int **changelog = NULL;
-	int idx = 0;
-
-	priv = this->private;
-
-	idx = afr_index_for_transaction_type (AFR_DATA_TRANSACTION);
-
-	uuid_copy (inode->gfid, replies[source].poststat.ia_gfid);
-
-	changelog = afr_matrix_create (priv->child_count, AFR_NUM_CHANGE_LOGS);
-
-	xattr = dict_new();
-	if (!xattr)
-		return -ENOMEM;
-
-	for (i = 0; i < priv->child_count; i++) {
-		if (!newentry[i])
-			continue;
-		changelog[i][idx] = hton32(1);
-	}
-
-	afr_set_pending_dict (priv, xattr, changelog);
-
-	for (i = 0; i < priv->child_count; i++) {
-		if (!sources[i])
-			continue;
-		afr_selfheal_post_op (frame, this, inode, i, xattr);
-	}
-
-	dict_unref (xattr);
 	return ret;
 }
 
@@ -204,6 +163,7 @@ __afr_selfheal_heal_dirent (call_frame_t *frame, xlator_t *this, fd_t *fd,
 	unsigned char *newentry = NULL;
 
 	priv = this->private;
+
 	newentry = alloca0 (priv->child_count);
 
 	if (!replies[source].valid)
@@ -214,20 +174,16 @@ __afr_selfheal_heal_dirent (call_frame_t *frame, xlator_t *this, fd_t *fd,
 			continue;
 		if (replies[source].op_ret == -1 &&
 		    replies[source].op_errno == ENOENT) {
-			ret = afr_selfheal_entry_delete (frame, this, fd->inode,
-							 name, inode, i, replies);
+			ret = afr_selfheal_entry_delete (this, fd->inode, name,
+                                                         inode, i, replies);
 		} else {
 			if (!uuid_compare (replies[i].poststat.ia_gfid,
 					   replies[source].poststat.ia_gfid))
 				continue;
 
-			ret = afr_selfheal_recreate_entry (frame, this, i, source,
+			ret = afr_selfheal_recreate_entry (this, i, source,
 							   fd->inode, name, inode,
-							   replies);
-			if (ret > 0) {
-				newentry[i] = 1;
-				ret = 0;
-			}
+							   replies, newentry);
 		}
 		if (ret < 0)
 			break;
@@ -250,8 +206,11 @@ __afr_selfheal_merge_dirent (call_frame_t *frame, xlator_t *this, fd_t *fd,
 	afr_private_t *priv = NULL;
 	int i = 0;
 	int source = -1;
+        unsigned char *newentry = NULL;
 
 	priv = this->private;
+
+	newentry = alloca0 (priv->child_count);
 
 	for (i = 0; i < priv->child_count; i++) {
 		if (replies[i].valid && replies[i].op_ret == 0) {
@@ -272,11 +231,14 @@ __afr_selfheal_merge_dirent (call_frame_t *frame, xlator_t *this, fd_t *fd,
 		if (replies[i].op_errno != ENOENT)
 			continue;
 
-		ret = afr_selfheal_recreate_entry (frame, this, i, source,
-						   fd->inode, name, inode,
-						   replies);
+		ret = afr_selfheal_recreate_entry (this, i, source, fd->inode,
+                                                   name, inode, replies,
+                                                   newentry);
 	}
 
+	if (AFR_COUNT (newentry, priv->child_count))
+		afr_selfheal_newentry_mark (frame, this, inode, source, replies,
+					    sources, newentry);
 	return ret;
 }
 
@@ -327,7 +289,8 @@ afr_selfheal_entry_dirent (call_frame_t *frame, xlator_t *this, fd_t *fd,
 		}
 
 		inode = afr_selfheal_unlocked_lookup_on (frame, fd->inode, name,
-							 replies, locked_on);
+							 replies, locked_on,
+                                                         NULL);
 		if (!inode) {
 			ret = -ENOMEM;
 			goto unlock;
@@ -476,8 +439,7 @@ __afr_selfheal_entry_prepare (call_frame_t *frame, xlator_t *this, fd_t *fd,
 	if (ret)
 		return ret;
 
-	ret = afr_selfheal_find_direction (frame, this, replies,
-					   AFR_ENTRY_TRANSACTION,
+	ret = afr_selfheal_find_direction (this, replies, AFR_ENTRY_TRANSACTION,
 					   locked_on, sources, sinks);
 	if (ret)
 		return ret;

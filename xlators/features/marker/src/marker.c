@@ -250,7 +250,8 @@ marker_getxattr_stampfile_cbk (call_frame_t *frame, xlator_t *this,
 
         STACK_UNWIND_STRICT (getxattr, frame, 0, 0, dict, xdata);
 
-        dict_unref (dict);
+        if (dict)
+                dict_unref (dict);
 out:
         return 0;
 }
@@ -1130,7 +1131,7 @@ marker_rename_release_oldp_lock (call_frame_t *frame, void *cookie,
         local = frame->local;
         oplocal = local->oplocal;
 
-        if ((op_ret < 0) && (op_errno != ENOATTR)) {
+        if ((op_ret < 0) && (op_errno != ENOATTR) && (op_errno != ENODATA)) {
                 local->err = op_errno;
         }
 
@@ -1275,7 +1276,7 @@ marker_do_rename (call_frame_t *frame, void *cookie, xlator_t *this,
         if (cookie == (void *) _GF_UID_GID_CHANGED)
                 MARKER_RESET_UID_GID (frame, frame->root, local);
 
-        if ((op_ret < 0) && (op_errno != ENOATTR)) {
+        if ((op_ret < 0) && (op_errno != ENOATTR) && (op_errno != ENODATA)) {
                 local->err = op_errno ? op_errno : EINVAL;
                 gf_log (this->name, GF_LOG_WARNING,
                         "fetching contribution values from %s (gfid:%s) "
@@ -1327,7 +1328,7 @@ marker_get_newpath_contribution (call_frame_t *frame, void *cookie,
         if (cookie == (void *) _GF_UID_GID_CHANGED)
                 MARKER_RESET_UID_GID (frame, frame->root, local);
 
-        if ((op_ret < 0) && (op_errno != ENOATTR)) {
+        if ((op_ret < 0) && (op_errno != ENOATTR) && (op_errno != ENODATA)) {
                 local->err = op_errno ? op_errno : EINVAL;
                 gf_log (this->name, GF_LOG_WARNING,
                         "fetching contribution values from %s (gfid:%s) "
@@ -2778,7 +2779,11 @@ marker_readdirp (call_frame_t *frame, xlator_t *this, fd_t *fd, size_t size,
 
         priv = this->private;
 
-        if ((dict != NULL) && dict_get (dict, GET_ANCESTRY_DENTRY_KEY)) {
+        dict = dict ? dict_ref(dict) : dict_new();
+        if (!dict)
+                goto unwind;
+
+        if (dict_get (dict, GET_ANCESTRY_DENTRY_KEY)) {
                 STACK_WIND (frame, marker_build_ancestry_cbk,
                             FIRST_CHILD(this),
                             FIRST_CHILD(this)->fops->readdirp,
@@ -2791,9 +2796,6 @@ marker_readdirp (call_frame_t *frame, xlator_t *this, fd_t *fd, size_t size,
 
                         loc.parent = local->loc.inode = inode_ref (fd->inode);
 
-                        if (dict == NULL)
-                                dict = dict_new ();
-
                         mq_req_xattr (this, &loc, dict);
                 }
 
@@ -2803,9 +2805,12 @@ marker_readdirp (call_frame_t *frame, xlator_t *this, fd_t *fd, size_t size,
                             fd, size, offset, dict);
         }
 
+        dict_unref (dict);
+        return 0;
+unwind:
+        STACK_UNWIND_STRICT (readdirp, frame, -1, ENOMEM, NULL, NULL);
         return 0;
 }
-
 
 int32_t
 mem_acct_init (xlator_t *this)
