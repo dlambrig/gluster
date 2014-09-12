@@ -961,11 +961,11 @@ dht_migrate_file (xlator_t *this, loc_t *loc, xlator_t *from, xlator_t *to,
                                                dict, &dst_fd, xattr);
         if (ret)
                 goto out;
-
-        ret = __dht_check_free_space (to, from, loc, &stbuf, flag);
-        if (ret) {
-                goto out;
-        }
+        // DAN FIXME
+        //ret = __dht_check_free_space (to, from, loc, &stbuf, flag);
+        //if (ret) {
+        //        goto out;
+        // }
 
         /* Open the source, and also update mode/xattr */
         ret = __dht_rebalance_open_src_file (from, to, loc, &stbuf, &src_fd);

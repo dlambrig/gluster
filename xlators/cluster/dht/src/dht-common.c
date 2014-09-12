@@ -3518,7 +3518,7 @@ dht_statfs (call_frame_t *frame, xlator_t *this, loc_t *loc, dict_t *xdata)
         VALIDATE_OR_GOTO (frame, err);
         VALIDATE_OR_GOTO (this, err);
         VALIDATE_OR_GOTO (loc, err);
-        VALIDATE_OR_GOTO (loc->gfid[15] == 1 || loc->inode, err);
+        VALIDATE_OR_GOTO ( ((loc->gfid[15] == 1) || (loc->inode)) , err); // DAN
         VALIDATE_OR_GOTO (this->private, err);
 
         conf = this->private;
@@ -3529,7 +3529,7 @@ dht_statfs (call_frame_t *frame, xlator_t *this, loc_t *loc, dict_t *xdata)
                 goto err;
         }
 
-        if (loc->gfid[15] == 1 || IA_ISDIR (loc->inode->ia_type)) {
+        if (loc->gfid[15] == 1 || IA_ISDIR (loc->inode->ia_type)) {   // DAN
                 local->call_cnt = conf->subvolume_cnt;
 
                 for (i = 0; i < conf->subvolume_cnt; i++) {

@@ -934,7 +934,7 @@ dht_migration_complete_check_task (void *data)
 
         if (ret) {
                 if (!dht_inode_missing(-ret) || (!local->loc.inode)) {
-                        local->op_errno = -ret;
+                       local->op_errno = -ret;
                         gf_log (this->name, GF_LOG_ERROR,
                                 "%s: failed to get the 'linkto' xattr %s",
                                 local->loc.path, strerror (-ret));
@@ -1082,6 +1082,9 @@ dht_rebalance_complete_check (xlator_t *this, call_frame_t *frame)
 {
         int         ret     = -1;
 
+        if (!strcmp(this->parents->xlator->type,"cluster/dht"))  // DAN
+                return -1;
+
         ret = synctask_new (this->ctx->env, dht_migration_complete_check_task,
                             dht_migration_complete_check_done,
                             frame, frame);
@@ -1123,6 +1126,9 @@ dht_rebalance_inprogress_task (void *data)
         frame = data;
         local = frame->local;
         conf = this->private;
+
+        if (!strcmp(this->parents->xlator->type,"cluster/dht"))  // DAN
+                return -1;
 
         src_node = local->cached_subvol;
 
