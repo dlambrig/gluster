@@ -2653,6 +2653,7 @@ volume_volgen_graph_build_clusters (volgen_graph_t *graph,
                         ret = 0;
                         goto out;
                 }
+
                 children = volinfo->brick_count;
                 for (client = first_of(graph); --children; client = client->next);
                 ret = volgen_graph_build_tier (graph, volinfo,

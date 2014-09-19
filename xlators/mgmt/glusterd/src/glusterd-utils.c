@@ -7075,7 +7075,7 @@ glusterd_get_dist_leaf_count (glusterd_volinfo_t *volinfo)
 {
     int rcount = volinfo->replica_count;
     int scount = volinfo->stripe_count;
-
+                gf_log ("", GF_LOG_ERROR, "TIER VOLUME: ");
     if (volinfo->type == GF_CLUSTER_TYPE_TIER)
             return 2;
 
